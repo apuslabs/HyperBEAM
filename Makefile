@@ -3,7 +3,7 @@
 compile:
 	rebar3 compile
 
-WAMR_VERSION = 2.2.0
+WAMR_VERSION = 2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
 
 ifdef HB_DEBUG
@@ -40,7 +40,7 @@ debug-clean:
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
 	git clone \
-		https://github.com/bytecodealliance/wasm-micro-runtime.git \
+		https://github.com/apuslabs/wasm-micro-runtime.git \
 		$(WAMR_DIR) \
 		-b WAMR-$(WAMR_VERSION) \
 		--single-branch
@@ -67,7 +67,10 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_TAIL_CALL=1 \
         -DWAMR_BUILD_AOT_STACK_FRAME=1 \
         -DWAMR_BUILD_MEMORY_PROFILING=1 \
-        -DWAMR_BUILD_DUMP_CALL_STACK=1
+        -DWAMR_BUILD_DUMP_CALL_STACK=1 \
+		-DWAMR_BUILD_SHARED=1 \
+		-DWAMR_BUILD_WASI_NN=1 \
+		-DWAMR_BUILD_WASI_NN_LLAMACPP=1
 	make -C $(WAMR_DIR)/lib -j8
 
 clean:
