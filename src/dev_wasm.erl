@@ -35,6 +35,7 @@
 -export([store_wasm_image/1]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-hb_debug(print).
 
 %% @doc Boot a WASM image on the image stated in the `Process/Image' field of
 %% the message.
