@@ -41,6 +41,7 @@
 -export([cache_wasm_image/1, cache_wasm_image/2]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-hb_debug(print).
 
 %% @doc Export all functions aside the `instance/3' function.
 info(_Msg1, _Opts) ->

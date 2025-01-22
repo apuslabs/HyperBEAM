@@ -9,6 +9,7 @@
 -export([path_open/3, fd_write/3, fd_read/3, clock_time_get/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-hb_debug(print).
 
 -define(INIT_VFS,
     #{
