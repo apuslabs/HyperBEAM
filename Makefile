@@ -3,7 +3,7 @@
 compile:
 	rebar3 compile
 
-WAMR_VERSION = 2.1.2
+WAMR_VERSION = 2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
 
 # commented out to remove NFR blocking commits
@@ -45,7 +45,7 @@ debug-clean:
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
 	git clone \
-		https://github.com/bytecodealliance/wasm-micro-runtime.git \
+		https://github.com/apuslabs/wasm-micro-runtime.git \
 		$(WAMR_DIR) \
 		-b WAMR-$(WAMR_VERSION) \
 		--single-branch
@@ -65,7 +65,10 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 		-DWAMR_BUILD_AOT=0 \
 		-DWAMR_BUILD_FAST_INTERP=0 \
 		-DWAMR_BUILD_INTERP=1 \
-		-DWAMR_BUILD_JIT=0
+		-DWAMR_BUILD_JIT=0 \
+		-DWAMR_BUILD_SHARED=1 \
+		-DWAMR_BUILD_WASI_NN=1 \
+		-DWAMR_BUILD_WASI_NN_LLAMACPP=1
 	make -C $(WAMR_DIR)/lib
 
 # $(GITHOOKS_DIR)/_/setup:
