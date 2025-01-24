@@ -60,6 +60,7 @@ default_message() ->
                 <<"process@1.0">> => dev_process,
                 <<"wasm-64@1.0">> => dev_wasm,
                 <<"wasi@1.0">> => dev_wasi,
+				<<"wasi-nn@1.0">> => dev_wasi_nn,
                 <<"json-iface@1.0">> => dev_json_iface,
                 <<"dedup@1.0">> => dev_dedup,
                 <<"router@1.0">> => dev_router,
