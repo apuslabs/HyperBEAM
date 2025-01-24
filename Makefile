@@ -34,8 +34,8 @@ debug: debug-clean $(WAMR_DIR)
 	CFLAGS="-DHB_DEBUG=1" rebar3 compile
 
 debug-clean:
-	rm -rf priv
-	rm -rf $(WAMR_DIR)
+	# rm -rf priv
+	rm -rf $(WAMR_DIR)/lib
 
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
