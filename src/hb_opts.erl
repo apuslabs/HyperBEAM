@@ -56,6 +56,7 @@ config() ->
                 <<"Process/1.0">> => dev_process,
                 <<"WASM-64/1.0">> => dev_wasm,
                 <<"WASI/1.0">> => dev_wasi,
+				<<"WASI-NN/1.0">> => dev_wasi_nn,
                 <<"JSON-Iface/1.0">> => dev_json_iface,
                 <<"Cron">> => dev_cron,
                 <<"Deduplicate">> => dev_dedup,

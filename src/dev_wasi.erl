@@ -6,7 +6,7 @@
 %%% modules.
 -module(dev_wasi).
 -export([init/3, compute/1, stdout/1]).
--export([path_open/3, fd_write/3, fd_read/3, clock_time_get/3]).
+-export([path_open/3, fd_write/3, fd_read/3, clock_time_get/3, args_get/3, args_sizes_get/3, environ_get/3, environ_sizes_get/3, proc_exit/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -hb_debug(print).
@@ -246,6 +246,36 @@ clock_time_get(Msg1, _Msg2, Opts) ->
     State = hb_converge:get(<<"State">>, Msg1, Opts),
     {ok, #{ state => State, wasm_response => [1] }}.
 
+%%% Misc WASI-preview-1 handlers
+args_get(Msg1, _Msg2, Opts) ->
+    ?event({args_get, {returning, 1}}),
+    State = hb_converge:get(<<"State">>, Msg1, Opts),
+    {ok, #{ state => State, wasm_response => [1] }}.
+
+%%% Misc WASI-preview-1 handlers
+args_sizes_get(Msg1, _Msg2, Opts) ->
+    ?event({args_sizes_get, {returning, 1}}),
+    State = hb_converge:get(<<"State">>, Msg1, Opts),
+    {ok, #{ state => State, wasm_response => [[0,0]] }}.
+
+%%% Misc WASI-preview-1 handlers
+environ_get(Msg1, _Msg2, Opts) ->
+    ?event({environ_get, {returning, 1}}),
+    State = hb_converge:get(<<"State">>, Msg1, Opts),
+    {ok, #{ state => State, wasm_response => [1] }}.
+
+%%% Misc WASI-preview-1 handlers
+environ_sizes_get(Msg1, _Msg2, Opts) ->
+    ?event({environ_sizes_get, {returning, 1}}),
+    State = hb_converge:get(<<"State">>, Msg1, Opts),
+    {ok, #{ state => State, wasm_response => [[0,0]] }}.
+
+%%% Misc WASI-preview-1 handlers
+proc_exit(Msg1, _Msg2, Opts) ->
+    ?event({proc_exit, {returning, 0}}),
+    State = hb_converge:get(<<"State">>, Msg1, Opts),
+    {ok, #{ state => State, wasm_response => [0] }}.
+
 %%% Tests
 
 init() ->
@@ -278,6 +308,10 @@ wasi_stack_is_serializable_test() ->
     Msg2 = hb_message:tx_to_message(hb_message:message_to_tx(Msg)),
     ?assert(hb_message:match(Msg, Msg2)).
 
+
+get_init_test() ->
+    Init = generate_wasi_stack("test/aos-2-pure-xs.wasm", <<"handle">>, []),
+	Init.
 
 basic_aos_exec_test() ->
     Init = generate_wasi_stack("test/aos-2-pure-xs.wasm", <<"handle">>, []),
