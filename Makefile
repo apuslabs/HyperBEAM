@@ -39,7 +39,7 @@ debug: debug-clean $(WAMR_DIR)
 	CFLAGS="-DHB_DEBUG=1" rebar3 compile
 
 debug-clean:
-	# rm -rf priv
+	rm -rf priv
 	rm -rf $(WAMR_DIR)/lib
 
 # Clone the WAMR repository at our target release
@@ -67,8 +67,11 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 		-DWAMR_BUILD_INTERP=1 \
 		-DWAMR_BUILD_JIT=0 \
 		-DWAMR_BUILD_SHARED=1 \
+		-DWAMR_BUILD_LIBC_WASI=0 \
 		-DWAMR_BUILD_WASI_NN=1 \
-		-DWAMR_BUILD_WASI_NN_LLAMACPP=1
+		-DWAMR_BUILD_WASI_EPHEMERAL_NN=1 \
+		-DWAMR_BUILD_WASI_NN_LLAMACPP=1 \
+		-DWAMR_BUILD_WASI_NN_ENABLE_GPU=0
 	make -C $(WAMR_DIR)/lib
 
 # $(GITHOOKS_DIR)/_/setup:
