@@ -72,3 +72,14 @@ rag_test() ->
     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
     ?event({got_output, Output}).
 
+qwen_test() ->
+	%% TODO: simplify wasmedge-ggml-qwen.wasm, not read args, not read env, read file from embedded file
+	%% embedded file: qwen.gguf
+	%% how to embed in rust: include_bytes!("qwen.gguf")
+	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"_start">>, ["qwen.gguf", "Hello, World!"]),
+	Port = hb_private:get(<<"WASM/Port">>, Init, #{}),
+    {ok, StateRes} = hb_converge:resolve(Init, <<"Compute">>, #{}),
+    [Ptr] = hb_converge:get(<<"Results/WASM/Output">>, StateRes),
+    {ok, Output} = hb_beamr_io:read_string(Port, Ptr),
+    ?event({got_output, Output}).
+
