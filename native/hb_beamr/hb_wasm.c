@@ -174,12 +174,6 @@ void wasm_initialize_runtime(void* raw) {
         const wasm_name_t* name = wasm_importtype_name(import);
         const wasm_externtype_t* type = wasm_importtype_type(import);
 
-        /* use wasm_extern_new_empty() to create a placeholder */
-		if (wasm_importtype_is_linked(import)) {
-            stubs[i] = wasm_extern_new_empty(proc->store, wasm_externtype_kind(type));
-            continue;
-        }
-		
         char* type_str = driver_alloc(256);
         // TODO: What happpens here?
         if(!get_function_sig(type, type_str)) {
@@ -200,6 +194,12 @@ void wasm_initialize_runtime(void* raw) {
         init_msg[msg_i++] = strlen(type_str);
         init_msg[msg_i++] = ERL_DRV_TUPLE;
         init_msg[msg_i++] = 4;
+
+        /* use wasm_extern_new_empty() to create a placeholder */
+		if (wasm_importtype_is_linked(import)) {
+            stubs[i] = wasm_extern_new_empty(proc->store, wasm_externtype_kind(type));
+            continue;
+        }
 
         DRV_DEBUG("Creating callback for %s.%s [%s]", module_name->data, name->data, type_str);
         ImportHook* hook = driver_alloc(sizeof(ImportHook));
