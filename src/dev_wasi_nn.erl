@@ -76,7 +76,7 @@ qwen_test() ->
 	%% TODO: simplify wasmedge-ggml-qwen.wasm, not read args, not read env, read file from embedded file
 	%% embedded file: qwen.gguf
 	%% how to embed in rust: include_bytes!("qwen.gguf")
-	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"_start">>, ["qwen.gguf", "Hello, World!"]),
+	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"_start">>, []),
 	Port = hb_private:get(<<"WASM/Port">>, Init, #{}),
     {ok, StateRes} = hb_converge:resolve(Init, <<"Compute">>, #{}),
     [Ptr] = hb_converge:get(<<"Results/WASM/Output">>, StateRes),

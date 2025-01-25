@@ -247,34 +247,39 @@ clock_time_get(Msg1, _Msg2, Opts) ->
     {ok, #{ <<"state">> => State, <<"results">> => [1] }}.
 
 %%% Misc WASI-preview-1 handlers
+%%% TODO: not implmented due to tuple return
 args_get(Msg1, _Msg2, Opts) ->
-    ?event({args_get, {returning, 1}}),
+    ?event({args_get, {returning, null}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [1] }}.
+    {ok, #{ state => State, wasm_response => [] }}.
 
 %%% Misc WASI-preview-1 handlers
+%%% TODO: not implmented due to tuple return
 args_sizes_get(Msg1, _Msg2, Opts) ->
-    ?event({args_sizes_get, {returning, 1}}),
+    ?event({args_sizes_get, {returning, null}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [[0,0]] }}.
+    {ok, #{ state => State, wasm_response => [] }}.
 
 %%% Misc WASI-preview-1 handlers
+%%% TODO: not implmented due to tuple return
 environ_get(Msg1, _Msg2, Opts) ->
-    ?event({environ_get, {returning, 1}}),
+    ?event({environ_get, {returning, null}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [1] }}.
+    {ok, #{ state => State, wasm_response => [] }}.
 
 %%% Misc WASI-preview-1 handlers
+%%% TODO: not implmented due to tuple return
 environ_sizes_get(Msg1, _Msg2, Opts) ->
-    ?event({environ_sizes_get, {returning, 1}}),
+    ?event({environ_sizes_get, {returning, null}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [[0,0]] }}.
+    {ok, #{ state => State, wasm_response => [] }}.
 
 %%% Misc WASI-preview-1 handlers
+%%% TODO: not implmented due to tuple return
 proc_exit(Msg1, _Msg2, Opts) ->
-    ?event({proc_exit, {returning, 0}}),
+    ?event({proc_exit, {returning, null}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [0] }}.
+    {ok, #{ state => State, wasm_response => [] }}.
 
 %%% Tests
 
