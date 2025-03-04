@@ -1,6 +1,5 @@
 -module(hb_test).
 -export([init/0, generate_test_data/1, run/2]).
--hb_debug(print).
 
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").

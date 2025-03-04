@@ -3,7 +3,7 @@
 compile:
 	rebar3 compile
 
-WAMR_VERSION = 2.2.0-wasi-nn
+WAMR_VERSION = WAMR-2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
 
 ifdef HB_DEBUG
@@ -31,7 +31,7 @@ wamr: $(WAMR_DIR)/lib/libvmlib.a
 
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
-	CFLAGS="-DHB_DEBUG=1" rebar3 compile
+	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 
 debug-clean:
 	rm -rf priv
@@ -42,7 +42,7 @@ $(WAMR_DIR):
 	git clone \
 		https://github.com/apuslabs/wasm-micro-runtime.git \
 		$(WAMR_DIR) \
-		-b WAMR-$(WAMR_VERSION) \
+		-b $(WAMR_VERSION) \
 		--single-branch
 
 $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
@@ -58,7 +58,7 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 		-DWAMR_BUILD_EXCE_HANDLING=1 \
 		-DWAMR_BUILD_SHARED_MEMORY=0 \
 		-DWAMR_BUILD_AOT=1 \
-		-DWAMR_BUILD_LIBC_WASI=0 \
+		-DWAMR_BUILD_LIBC_WASI=1 \
 		-DWAMR_BUILD_FAST_INTERP=0 \
 		-DWAMR_BUILD_INTERP=1 \
 		-DWAMR_BUILD_JIT=0 \
@@ -69,10 +69,8 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_MEMORY_PROFILING=1 \
         -DWAMR_BUILD_DUMP_CALL_STACK=1 \
 		-DWAMR_BUILD_SHARED=1 \
-		-DWAMR_BUILD_LIBC_WASI=0 \
 		-DWAMR_BUILD_WASI_NN=1 \
 		-DWAMR_BUILD_WASI_EPHEMERAL_NN=1 \
-		-DWAMR_BUILD_WASI_NN_LLAMACPP=1 \
 		-DWAMR_BUILD_WASI_NN_LLAMACPP=1 \
 		-DWAMR_BUILD_WASI_NN_ENABLE_GPU=0
 	make -C $(WAMR_DIR)/lib -j8

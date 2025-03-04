@@ -51,8 +51,8 @@ generate_wasi_nn_stack(File, Func, Params) ->
     Msg0 = dev_wasm:cache_wasm_image(File),
     Msg1 = Msg0#{
         <<"device">> => <<"Stack@1.0">>,
-        <<"device-stack">> => [<<"WASI-NN@1.0">>, <<"WASI@1.0">>, <<"WASM-64@1.0">>],
-		<<"output-prefixes">> => [<<"wasm">>, <<"wasm">>],
+        <<"device-stack">> => [<<"WASI@1.0">>, <<"WASM-64@1.0">>],
+        <<"output-prefixes">> => [<<"wasm">>, <<"wasm">>],
         <<"stack-keys">> => [<<"init">>, <<"compute">>],
         <<"wasm-function">> => Func,
         <<"wasm-params">> => Params
@@ -60,26 +60,17 @@ generate_wasi_nn_stack(File, Func, Params) ->
     {ok, Msg2} = hb_converge:resolve(Msg1, <<"init">>, #{}),
     Msg2.
 
-get_init_test() -> 
-	Init = generate_wasi_nn_stack("test/wasmedge-ggml-llama-embedding.wasm", <<"_start">>, []),
-	Init.
-
-rag_test() ->
-	Init = generate_wasi_nn_stack("test/wasmedge-ggml-llama-embedding.wasm", <<"_start">>, []),
+qwen_test() ->
+	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"run_inference">>, []),
 	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-    {ok, StateRes} = hb_converge:resolve(Init, <<"compute">>, #{}),
+	% Prompt = <<"Hello, im Jax">>,
+    % {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Prompt)),
+    % ?assertNotEqual(0, Ptr1),
+    % hb_beamr_io:write(Instance, Ptr1, Prompt),
+	% Ready = Init#{ <<"wasm-params">> => [Ptr1] },
+	Ready = Init,
+    {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
     [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
-    ?event({got_output, Output}).
-
-qwen_test() ->
-	%% TODO: simplify wasmedge-ggml-qwen.wasm, not read args, not read env, read file from embedded file
-	%% embedded file: qwen.gguf
-	%% how to embed in rust: include_bytes!("qwen.gguf")
-	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"_start">>, []),
-	Port = hb_private:get(<<"WASM/Port">>, Init, #{}),
-    {ok, StateRes} = hb_converge:resolve(Init, <<"Compute">>, #{}),
-    [Ptr] = hb_converge:get(<<"Results/WASM/Output">>, StateRes),
-    {ok, Output} = hb_beamr_io:read_string(Port, Ptr),
     ?event({got_output, Output}).
 

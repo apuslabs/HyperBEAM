@@ -6,7 +6,7 @@
 %%% modules.
 -module(dev_wasi).
 -export([init/3, compute/1, stdout/1]).
--export([path_open/3, fd_write/3, fd_read/3, clock_time_get/3, args_get/3, args_sizes_get/3, environ_get/3, environ_sizes_get/3, proc_exit/3]).
+-export([path_open/3, fd_write/3, fd_read/3, clock_time_get/3, environ_get/3, environ_sizes_get/3, proc_exit/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -hb_debug(print).
@@ -246,38 +246,34 @@ clock_time_get(Msg1, _Msg2, Opts) ->
     State = hb_converge:get(<<"state">>, Msg1, Opts),
     {ok, #{ <<"state">> => State, <<"results">> => [1] }}.
 
-%%% Misc WASI-preview-1 handlers
-%%% TODO: not implmented due to tuple return
-args_get(Msg1, _Msg2, Opts) ->
-    ?event({args_get, {returning, null}}),
-    State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [] }}.
+environ_sizes_ok(Size1, Size2) ->
+    <<
+        Size1:32/little-unsigned-integer,
+        Size2:32/little-unsigned-integer
+    >>.
 
 %%% Misc WASI-preview-1 handlers
 %%% TODO: not implmented due to tuple return
-args_sizes_get(Msg1, _Msg2, Opts) ->
-    ?event({args_sizes_get, {returning, null}}),
+environ_get(Msg1, Msg2, Opts) ->
+    ?event({environ_get, {returning, 0}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [] }}.
-
-%%% Misc WASI-preview-1 handlers
-%%% TODO: not implmented due to tuple return
-environ_get(Msg1, _Msg2, Opts) ->
-    ?event({environ_get, {returning, null}}),
-    State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [] }}.
+	[_, EnvironBufPtr] = hb_converge:get(<<"args">>, Msg2, Opts),
+	Instance = hb_private:get(<<"wasm/instance">>, State, Opts),
+	hb_beamr_io:write(Instance, EnvironBufPtr,
+        <<0:64/little-unsigned-integer>>),
+    {ok, #{ state => State, wasm_response => [0] }}.
 
 %%% Misc WASI-preview-1 handlers
 %%% TODO: not implmented due to tuple return
 environ_sizes_get(Msg1, _Msg2, Opts) ->
-    ?event({environ_sizes_get, {returning, null}}),
+    ?event({environ_get, {returning, 0}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
-    {ok, #{ state => State, wasm_response => [] }}.
+    {ok, #{ state => State, wasm_response => [environ_sizes_ok(0,0)] }}.
 
 %%% Misc WASI-preview-1 handlers
 %%% TODO: not implmented due to tuple return
 proc_exit(Msg1, _Msg2, Opts) ->
-    ?event({proc_exit, {returning, null}}),
+    ?event({proc_exit, {returning, 0}}),
     State = hb_converge:get(<<"State">>, Msg1, Opts),
     {ok, #{ state => State, wasm_response => [] }}.
 
