@@ -80,7 +80,8 @@ default_message() ->
                 <<"genesis-wasm@1.0">> => dev_genesis_wasm,
                 <<"delegated-compute@1.0">> => dev_delegated_compute,
                 <<"patch@1.0">> => dev_patch,
-                <<"test-device@1.0">> => dev_test
+                <<"test-device@1.0">> => dev_test,
+				<<"calculator@1.0">> => dev_calculator
             },
         %% Default execution cache control options
         cache_control => [<<"no-cache">>, <<"no-store">>],
