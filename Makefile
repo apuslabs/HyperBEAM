@@ -1,10 +1,13 @@
 .PHONY: compile
 
-compile:
+compile: wamr llama
 	rebar3 compile
 
 WAMR_VERSION = 2.2.0
 WAMR_DIR = _build/wamr
+
+LLAMA_DIR = _build/llama
+
 
 ifdef HB_DEBUG
 	WAMR_FLAGS = -DWAMR_ENABLE_LOG=1 -DWAMR_BUILD_DUMP_CALL_STACK=1 -DCMAKE_BUILD_TYPE=Debug
@@ -27,7 +30,15 @@ else
     WAMR_BUILD_TARGET = X86_64
 endif
 
+
+
+
+
 wamr: $(WAMR_DIR)/lib/libvmlib.a
+
+
+llama: $(LLAMA_DIR)/lib/libwasi_nn_llama.so
+
 
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
@@ -36,7 +47,7 @@ debug: debug-clean $(WAMR_DIR)
 debug-clean:
 	rm -rf priv
 	rm -rf $(WAMR_DIR)
-
+	rm -rf $(LLAMA_DIR)
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
 	git clone \
@@ -70,9 +81,33 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_DUMP_CALL_STACK=1
 	make -C $(WAMR_DIR)/lib -j8
 
+$(LLAMA_DIR):
+	mkdir -p $(LLAMA_DIR)
+	test -d $(LLAMA_DIR)/llama.cpp || git clone https://github.com/ggerganov/llama.cpp.git $(LLAMA_DIR)/llama.cpp
+	cd $(LLAMA_DIR)/llama.cpp && mkdir -p build && cd build && cmake .. && make -j8
+
+$(LLAMA_DIR)/lib/libwasi_nn_llama.so: $(LLAMA_DIR)
+	mkdir -p $(LLAMA_DIR)/lib
+	cd $(LLAMA_DIR)/llama.cpp && mkdir -p build && cd build && cmake .. && make
+	cmake \
+		-S native/wasi_nn_llama \
+		-B $(LLAMA_DIR)/lib \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DLLAMA_CPP_INCLUDE_DIR=$(LLAMA_DIR)/llama.cpp \
+		-DLLAMA_BUILD_DIR=$(LLAMA_DIR)/llama.cpp/build
+	make -C $(LLAMA_DIR)/lib -j8
+	cp $(LLAMA_DIR)/lib/libwasi_nn_llama.so priv/
+
 clean:
 	rebar3 clean
+clean-llama:
+	rm -rf $(LLAMA_DIR)
+	rm -f priv/libwasi_nn_llama.so
 
+rebuild-llama:
+	cmake --build $(LLAMA_DIR)/lib --clean-first
+	make -C $(LLAMA_DIR)/lib -j8
+	cp $(LLAMA_DIR)/lib/libwasi_nn_llama.so priv/
 # Add a new target to print the library path
 print-lib-path:
 	@echo $(CURDIR)/lib/libvmlib.a
