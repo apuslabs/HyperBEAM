@@ -1,13 +1,10 @@
 .PHONY: compile
 
-compile: wamr llama
+compile:
 	rebar3 compile
 
-WAMR_VERSION = 2.2.0
+WAMR_VERSION = WAMR-2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
-
-LLAMA_DIR = _build/llama
-
 
 ifdef HB_DEBUG
 	WAMR_FLAGS = -DWAMR_ENABLE_LOG=1 -DWAMR_BUILD_DUMP_CALL_STACK=1 -DCMAKE_BUILD_TYPE=Debug
@@ -30,30 +27,22 @@ else
     WAMR_BUILD_TARGET = X86_64
 endif
 
-
-
-
-
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-
-
-llama: $(LLAMA_DIR)/lib/libwasi_nn_llama.so
-
 
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
-	CFLAGS="-DHB_DEBUG=1" rebar3 compile
+	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 
 debug-clean:
 	rm -rf priv
-	rm -rf $(WAMR_DIR)
-	rm -rf $(LLAMA_DIR)
+	rm -rf $(WAMR_DIR)/lib
+
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
 	git clone \
-		https://github.com/bytecodealliance/wasm-micro-runtime.git \
+		https://github.com/apuslabs/wasm-micro-runtime.git \
 		$(WAMR_DIR) \
-		-b WAMR-$(WAMR_VERSION) \
+		-b $(WAMR_VERSION) \
 		--single-branch
 
 $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
@@ -69,7 +58,7 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 		-DWAMR_BUILD_EXCE_HANDLING=1 \
 		-DWAMR_BUILD_SHARED_MEMORY=0 \
 		-DWAMR_BUILD_AOT=1 \
-		-DWAMR_BUILD_LIBC_WASI=0 \
+		-DWAMR_BUILD_LIBC_WASI=1 \
 		-DWAMR_BUILD_FAST_INTERP=0 \
 		-DWAMR_BUILD_INTERP=1 \
 		-DWAMR_BUILD_JIT=0 \
@@ -78,36 +67,17 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_TAIL_CALL=1 \
         -DWAMR_BUILD_AOT_STACK_FRAME=1 \
         -DWAMR_BUILD_MEMORY_PROFILING=1 \
-        -DWAMR_BUILD_DUMP_CALL_STACK=1
+        -DWAMR_BUILD_DUMP_CALL_STACK=1 \
+		-DWAMR_BUILD_SHARED=1 \
+		-DWAMR_BUILD_WASI_NN=1 \
+		-DWAMR_BUILD_WASI_EPHEMERAL_NN=1 \
+		-DWAMR_BUILD_WASI_NN_LLAMACPP=1 \
+		-DWAMR_BUILD_WASI_NN_ENABLE_GPU=0
 	make -C $(WAMR_DIR)/lib -j8
-
-$(LLAMA_DIR):
-	mkdir -p $(LLAMA_DIR)
-	test -d $(LLAMA_DIR)/llama.cpp || git clone https://github.com/ggerganov/llama.cpp.git $(LLAMA_DIR)/llama.cpp
-	cd $(LLAMA_DIR)/llama.cpp && mkdir -p build && cd build && cmake .. && make -j8
-
-$(LLAMA_DIR)/lib/libwasi_nn_llama.so: $(LLAMA_DIR)
-	mkdir -p $(LLAMA_DIR)/lib
-	cd $(LLAMA_DIR)/llama.cpp && mkdir -p build && cd build && cmake .. && make
-	cmake \
-		-S native/wasi_nn_llama \
-		-B $(LLAMA_DIR)/lib \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DLLAMA_CPP_INCLUDE_DIR=$(LLAMA_DIR)/llama.cpp \
-		-DLLAMA_BUILD_DIR=$(LLAMA_DIR)/llama.cpp/build
-	make -C $(LLAMA_DIR)/lib -j8
-	cp $(LLAMA_DIR)/lib/libwasi_nn_llama.so priv/
 
 clean:
 	rebar3 clean
-clean-llama:
-	rm -rf $(LLAMA_DIR)
-	rm -f priv/libwasi_nn_llama.so
 
-rebuild-llama:
-	cmake --build $(LLAMA_DIR)/lib --clean-first
-	make -C $(LLAMA_DIR)/lib -j8
-	cp $(LLAMA_DIR)/lib/libwasi_nn_llama.so priv/
 # Add a new target to print the library path
 print-lib-path:
 	@echo $(CURDIR)/lib/libvmlib.a

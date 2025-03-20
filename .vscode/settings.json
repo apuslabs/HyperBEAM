@@ -1,5 +1,9 @@
 {
   "editor.detectIndentation": false,
   "editor.insertSpaces": false,
-  "editor.tabSize": 4
+"editor.tabSize": 4,
+"files.associations": {
+	"llama.h": "c"
+},
+"cmake.sourceDirectory": "/home/alex/apus-lab/HyperBEAM/native/wasi_nn_llama"
 }
