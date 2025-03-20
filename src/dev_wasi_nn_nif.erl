@@ -9,7 +9,7 @@
 
 init() ->
     PrivDir = code:priv_dir(hb),
-    Path = filename:join(PrivDir, "libwasi_nn_llama"),
+    Path = filename:join(PrivDir, "wasi_nn"),
     io:format("Loading NIF from: ~p~n", [Path]),
     case erlang:load_nif(Path, 0) of
         ok -> 
