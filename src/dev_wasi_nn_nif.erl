@@ -37,7 +37,7 @@ unload_model(_Context) ->
 
 load_model_test() ->
 	% Skip test if model doesn't exist
-	ModelPath = "test/test.wasm", % Use a path that exists or can be created
+	ModelPath = "test/qwen1_5-0_5b-chat-q5_k_m.gguf", % Use a path that exists or can be created
 	case filelib:is_regular(ModelPath) of
 		true ->
 			?event(ModelPath),
