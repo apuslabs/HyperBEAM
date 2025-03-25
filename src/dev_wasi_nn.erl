@@ -63,14 +63,50 @@ generate_wasi_nn_stack(File, Func, Params) ->
 qwen_test() ->
 	Init = generate_wasi_nn_stack("test/wasmedge-ggml-qwen.wasm", <<"run_inference">>, []),
 	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-	% Prompt = <<"Hello, im Jax">>,
-    % {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Prompt)),
-    % ?assertNotEqual(0, Ptr1),
-    % hb_beamr_io:write(Instance, Ptr1, Prompt),
-	% Ready = Init#{ <<"wasm-params">> => [Ptr1] },
 	Ready = Init,
     {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
     [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
     ?event({got_output, Output}).
 
+aos_wasi_nn_exec_test() ->
+	Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"lib_main">>, []),
+	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+	Ready = Init,
+    {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
+    [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+    {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+    ?event({got_output, Output}).
+
+% aos_wasi_nn_test() ->
+%     Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
+%     Msg = gen_test_aos_msg("local wasinn = require(\"wasi-nn\"); wasinn.run_inference(\"Hello\");"),
+%     Env = gen_test_env(),
+%     Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+%     {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
+%     ?assertNotEqual(0, Ptr1),
+%     hb_beamr_io:write(Instance, Ptr1, Msg),
+%     {ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
+%     ?assertNotEqual(0, Ptr2),
+%     hb_beamr_io:write(Instance, Ptr2, Env),
+%     % Read the strings to validate they are correctly passed
+%     {ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
+%     {ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
+%     ?assertEqual(Env, EnvBin),
+%     ?assertEqual(Msg, MsgBin),
+%     Ready = Init#{ <<"wasm-params">> => [Ptr1, Ptr2] },
+%     {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
+%     [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+%     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+%     ?event({got_output, Output}),
+%     #{ <<"response">> := #{ <<"Output">> := #{ <<"data">> := Data }} }
+%         = jiffy:decode(Output, [return_maps]),
+%     ?assertEqual(<<"2">>, Data).
+
+
+%%% Test Helpers
+gen_test_env() ->
+    <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
+
+gen_test_aos_msg(Command) ->
+    <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"", (list_to_binary(Command))/binary, "\"}\0">>.
