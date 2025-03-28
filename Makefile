@@ -5,7 +5,7 @@ compile:
 
 WAMR_VERSION = WAMR-2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
-
+WASI_NN_DIR = _build/wasi_nn
 ifdef HB_DEBUG
 	WAMR_FLAGS = -DWAMR_ENABLE_LOG=1 -DWAMR_BUILD_DUMP_CALL_STACK=1 -DCMAKE_BUILD_TYPE=Debug
 else
@@ -28,7 +28,7 @@ else
 endif
 
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-
+wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
 	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
@@ -46,6 +46,7 @@ $(WAMR_DIR):
 		--single-branch
 
 $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
+	
 	sed -i '742a tbl_inst->is_table64 = 1;' ./_build/wamr/core/iwasm/aot/aot_runtime.c; \
 	cmake \
 		$(WAMR_FLAGS) \
@@ -68,13 +69,21 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_AOT_STACK_FRAME=1 \
         -DWAMR_BUILD_MEMORY_PROFILING=1 \
         -DWAMR_BUILD_DUMP_CALL_STACK=1 \
-		-DWAMR_BUILD_SHARED=0 \
-		-DWAMR_BUILD_WASI_NN=1 \
-		-DWAMR_BUILD_WASI_EPHEMERAL_NN=1 \
-		-DWAMR_BUILD_WASI_NN_LLAMACPP=1 \
-		-DWAMR_BUILD_WASI_NN_ENABLE_GPU=1
+		-DWAMR_BUILD_SHARED=0 
 	make -C $(WAMR_DIR)/lib -j8
 
+$(WASI_NN_DIR):
+	git clone \
+		https://github.com/apuslabs/wasi_nn_backend.git \
+		$(WASI_NN_DIR)
+
+$(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so: $(WASI_NN_DIR) 
+	cmake \
+		$(WAMR_FLAGS) \
+		-S $(WASI_NN_DIR) \
+		-B $(WASI_NN_DIR)/build 
+	make -C $(WASI_NN_DIR)/build
+	cp $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so ./native/wasi_nn_llama
 clean:
 	rebar3 clean
 
