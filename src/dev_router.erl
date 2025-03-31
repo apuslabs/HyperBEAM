@@ -522,7 +522,6 @@ simulation_occurences(SimRes, Nodes) ->
                 NearestNodes
             )
         end,
-        #{ Node => 0 || Node <- Nodes },
         SimRes
     ).
 
