@@ -9,6 +9,7 @@ data
 *.plt
 *.swp
 *.swo
+*.wat
 .erlang.cookie
 ebin
 log
