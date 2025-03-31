@@ -4,9 +4,7 @@
 #define MAX_MODEL_PATH 256
 #define MAX_CONFIG_SIZE 1024
 #define MAX_OUTPUT_SIZE 8192
-#include <sys/resource.h>
-#include <unistd.h>
-#include <malloc.h>
+
 typedef struct {
     void* ctx;
     graph g;
@@ -15,35 +13,22 @@ typedef struct {
 
 static wasi_nn_backend_api g_wasi_nn_functions = {0};
 static ErlNifResourceType* llama_context_resource;
-static void print_memory_usage(const char* tag) {
-	struct mallinfo mi = mallinfo();
-	
-    printf("  Total allocated space: %d bytes\n", mi.uordblks);
-    printf("  Total free space: %d bytes\n", mi.fordblks);
-    printf("  Top-most memory: %d bytes\n", mi.keepcost);
-	struct rusage r_usage;
-    getrusage(RUSAGE_SELF, &r_usage);
-	printf("[Memory %s] MaxRSS: %ld KB\n", tag, r_usage.ru_maxrss);
-}
+
 static void llama_context_destructor(ErlNifEnv* env, void* obj)
 {
-	print_memory_usage("Destructor before");
+
     LlamaContext* ctx = (LlamaContext*)obj;
     if (ctx) {
         // Cleanup backend context
-        if (ctx->ctx && ctx->fns.deinit_backend) {
-            ctx->fns.deinit_backend(ctx->ctx);
+        if (ctx->ctx && g_wasi_nn_functions.deinit_backend) {
+            g_wasi_nn_functions.deinit_backend(ctx->ctx);
             ctx->ctx = NULL;
         }
-        // Cleanup shared library
-        if (ctx->fns.handle) {
-            dlclose(ctx->fns.handle);
-            ctx->fns.handle = NULL;
-        }
-        // Clear all function pointers
-        memset(&ctx->fns, 0, sizeof(WasiNnFunctions));
+        // No need to cleanup shared library here since it's managed globally
+        // Clear the context structure
+        memset(ctx, 0, sizeof(LlamaContext));
     }
-	print_memory_usage("Destructor end");
+
 }
 
 static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
@@ -73,7 +58,7 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 	
 	llama_context_resource = enif_open_resource_type(env, NULL, "llama_context",
         llama_context_destructor, ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
-	print_memory_usage("Load End");
+
     return llama_context_resource ? 0 : 1;
 }
 
@@ -96,12 +81,28 @@ static ERL_NIF_TERM nif_init_backend(ErlNifEnv* env, int argc, const ERL_NIF_TER
         return enif_make_tuple2(env, enif_make_atom(env, "error"), 
                               enif_make_atom(env, "init_failed"));
     }
+	printf("nif_init_backend finished \n");
     ERL_NIF_TERM ctx_term = enif_make_resource(env, ctx);
     return enif_make_tuple2(env, enif_make_atom(env, "ok"), ctx_term);
 }
+static ERL_NIF_TERM nif_load_by_name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    LlamaContext* ctx;
+    char model_path[MAX_MODEL_PATH];
+    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx) ||
+       !enif_get_string(env, argv[1], model_path, sizeof(model_path), ERL_NIF_LATIN1) ) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+       }
 
+    if (g_wasi_nn_functions.load_by_name(ctx->ctx, model_path, strlen(model_path), &ctx->g)!= success) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "load_failed"));
+    }
+    return enif_make_atom(env, "ok");
+
+}
 static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
+	printf("Load by name with config\n");
     LlamaContext* ctx;
     char model_path[MAX_MODEL_PATH];
 	char config[MAX_CONFIG_SIZE] = "{"
@@ -111,9 +112,15 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
 	"\"ctx_size\": 1024"
 	"}";
 	// check context and input
-    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx) ||
-        !enif_get_string(env, argv[1], model_path, sizeof(model_path), ERL_NIF_LATIN1) ) {
-        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+
+	if(!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx))
+	{
+		printf("Invalid context\n");
+		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_context"));
+	}
+    if (!enif_get_string(env, argv[1], model_path, sizeof(model_path), ERL_NIF_LATIN1)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), 
+                              enif_make_atom(env, "invalid_model_path"));
     }
 	// if conifg is provided, use it
 	if (argc > 2 && !enif_get_string(env, argv[2], config, sizeof(config), ERL_NIF_LATIN1)) {
@@ -127,17 +134,18 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
                                                    config, strlen(config), &ctx->g) != success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "load_failed"));
     }
-
+	printf("Loading model finished \n");
     return enif_make_atom(env, "ok");
 }
 
 static ERL_NIF_TERM nif_init_execution_context(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
+	printf("Init execution context start\n");
     LlamaContext* ctx;
-    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx) ||
-       !enif_get_uint(env, argv[1], &ctx->g)) {
-        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args_init_execution"));
     }
+
     if (g_wasi_nn_functions.init_execution_context(ctx->ctx, ctx->g, &ctx->exec_ctx)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "init_execution_failed"));
     }
@@ -150,6 +158,7 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
 	const char* input_text = "<|system|> You are a  assistant.";
+	printf("set input %s\n",input_text);
     tensor input_tensor = {
         .data = (uint8_t*)input_text,
     };
@@ -161,6 +170,7 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 static ERL_NIF_TERM nif_compute(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     LlamaContext* ctx;
+	
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
@@ -174,37 +184,52 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 {
     LlamaContext* ctx;
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
-        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_context"));
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-    uint8_t output_buffer[8192];  // Increased buffer size
+	printf("output stage1\n");
+    uint8_t output_buffer[MAX_OUTPUT_SIZE];
     uint32_t output_size = sizeof(output_buffer);
-    if (g_wasi_nn_functions.get_output(ctx->ctx, ctx->exec_ctx, 0, output_buffer, &output_size)!= success) {
+    
+    if (g_wasi_nn_functions.get_output(ctx->ctx, ctx->exec_ctx, 0, output_buffer, &output_size) != success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "get_output_failed"));
     }
+	printf("output stage2\n");
+    // Ensure null-termination if treating as string
+    if (output_size >= sizeof(output_buffer)) {
+        output_size = sizeof(output_buffer) - 1;
+    }
+    output_buffer[output_size] = '\0';
+    
     printf("output: %s\n", output_buffer);
-    // Create reference and return
-    ERL_NIF_TERM ctx_term = enif_make_resource(env, ctx);
-    enif_release_resource(ctx);
-    return enif_make_tuple3(env,
+    return enif_make_tuple2(env,
         enif_make_atom(env, "ok"),
-        ctx_term,
-        enif_make_binary(env, output_buffer, output_size));
+        enif_make_binary(env, output_buffer));
 }
-
+static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    LlamaContext* ctx;
+    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+    }
+    if (g_wasi_nn_functions.deinit_backend(ctx->ctx)!= success) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "deinit_failed"));
+    }
+    return enif_make_atom(env, "ok");
+}
 static ErlNifFunc nif_funcs[] = {
     {"init_backend", 0, nif_init_backend},
-	{"load_model", 1, nif_load_model},
-    {"load_by_name_with_config", 2, nif_load_by_name_with_config},
-    {"init_execution_context", 0, nif_init_execution_context},
+    {"load_by_name_with_config", 3, nif_load_by_name_with_config},
+    {"init_execution_context", 1, nif_init_execution_context},
     {"set_input", 1, nif_set_input},
-    {"compute", 0, nif_compute},
-    {"get_output", 0, nif_get_output},
+    {"compute", 1, nif_compute},
+    {"get_output", 1, nif_get_output},
+	{"deinit_backend", 1, nif_deinit_backend}
 };
 
 
 static void unload(ErlNifEnv* env, void* priv_data)
 {
 	// The resource destructor will be called automatically for any remaining resources
-	print_memory_usage("Unload nif");
+
 }
 ERL_NIF_INIT(dev_wasi_nn_nif, nif_funcs, load, NULL, NULL, unload)

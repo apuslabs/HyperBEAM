@@ -4,8 +4,6 @@
 -hb_debug(print).
 -on_load(init/0).
 
--export([load_model/1, load_model_with_config/2, generate/2, unload_model/1]).
-
 
 
 init() ->
@@ -24,37 +22,61 @@ init() ->
             exit({load_failed, Reason})
     end.
 
-load_model(_Path) ->
+init_backend() ->
     erlang:nif_error("NIF library not loaded").
 
-load_model_with_config(_Path, _Config) ->
+load_by_name_with_config(_Context,_Path, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-generate(_Context, _Prompt) ->
+init_execution_context(_Context) ->
     erlang:nif_error("NIF library not loaded").
 
-unload_model(_Context) ->
+set_input(_Context) ->
     erlang:nif_error("NIF library not loaded").
 
+compute(_Context) ->
+    erlang:nif_error("NIF library not loaded").
+get_output(_Context) ->
+    erlang:nif_error("NIF library not loaded").
+deinit_backend(_Context) ->
+	erlang:nif_error("NIF library not loaded").
 load_model_test() ->
-
 	% Skip test if model doesn't exist
 	ModelPath = "test/qwen1_5-0_5b-chat-q2_k.gguf",
 	case filelib:is_regular(ModelPath) of
 		true ->
 			?event(ModelPath),
-			% Load the model
-			{ok, Context} = load_model(ModelPath),
+			% Test init_backend
+			{ok, Context} = init_backend(),
 			try
+				% Print the context type for debugging
+				
 				?assertNotEqual(undefined, Context),
-
-				% Test simple generation
-				Prompt = "Once upon a time",
-				{ok, Generated} = generate(Context, Prompt),
-				?assertNotEqual("", Generated)
+				
+				% Test load_model_with_config
+				Config = "{\"n_gpu_layers\":20}",
+				
+				ok = load_by_name_with_config(Context,ModelPath, Config),
+				
+				% Test init_execution_context
+				ok = init_execution_context(Context),
+				
+				% Test set_input
+				ok = set_input(Context),
+				
+				% Test compute
+				ok = compute(Context),
+				
+				% Test get_output
+				{ok, Output} = get_output(Context),
+				?assertNotEqual("", Output)
+			catch
+				Error:Reason ->
+					io:format("Test failed: ~p:~p~n", [Error, Reason]),
+					erlang:error(Reason)
 			after
-				% Clean up will happen even if test fails
-				ok = unload_model(Context)
+			% Cleanup
+			ok = deinit_backend(Context)
 			end;
 		false ->
 			?debugMsg("Skipping test - model file not found")
