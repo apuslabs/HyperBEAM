@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <dlfcn.h>
+typedef enum {
+    WASI_NN_BACKEND_LLAMA_CPP,
+    WASI_NN_BACKEND_COUNT  // Must be last
+} wasi_nn_backend_type;
 
 // Function pointer types
 typedef wasi_nn_error (*init_backend_fn)(void **ctx);
@@ -20,14 +24,15 @@ typedef wasi_nn_error (*load_by_name_with_config_fn)(void *ctx, const char *file
 // Structure to hold all function pointers
 typedef struct {
     void* handle;
-    init_backend_fn init_backend;
-    deinit_backend_fn deinit_backend;
-    load_by_name_fn load_by_name;
-    init_execution_context_fn init_execution_context;
-    set_input_fn set_input;
-    compute_fn compute;
-    get_output_fn get_output;
-	load_by_name_with_config_fn load_by_name_with_config;
-} WasiNnFunctions;
-
+    struct {
+        init_backend_fn init_backend;
+        deinit_backend_fn deinit_backend;
+        load_by_name_fn load_by_name;
+        init_execution_context_fn init_execution_context;
+        set_input_fn set_input;
+        compute_fn compute;
+        get_output_fn get_output;
+        load_by_name_with_config_fn load_by_name_with_config;
+    } functions;
+} wasi_nn_backend_api;
 #endif // WASI_NN_LLAMACPP_H
