@@ -102,15 +102,9 @@ static ERL_NIF_TERM nif_load_by_name(ErlNifEnv* env, int argc, const ERL_NIF_TER
 }
 static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-	printf("Load by name with config\n");
     LlamaContext* ctx;
-    char model_path[MAX_MODEL_PATH];
-	char config[MAX_CONFIG_SIZE] = "{"
-	"\"enable_log\": true,"
-	"\"enable_debug_log\": true,"
-	"\"n_gpu_layers\": 20,"
-	"\"ctx_size\": 1024"
-	"}";
+    const char *model_path = (char *)malloc(MAX_MODEL_PATH * sizeof(char));
+	const char *config = (char *)malloc(MAX_CONFIG_SIZE * sizeof(char));
 	// check context and input
 
 	if(!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx))
@@ -118,12 +112,12 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
 		printf("Invalid context\n");
 		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_context"));
 	}
-    if (!enif_get_string(env, argv[1], model_path, sizeof(model_path), ERL_NIF_LATIN1)) {
+    if (!enif_get_string(env, argv[1], model_path, MAX_MODEL_PATH, ERL_NIF_LATIN1)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), 
                               enif_make_atom(env, "invalid_model_path"));
     }
 	// if conifg is provided, use it
-	if (argc > 2 && !enif_get_string(env, argv[2], config, sizeof(config), ERL_NIF_LATIN1)) {
+	if (argc > 2 && !enif_get_string(env, argv[2], config, MAX_CONFIG_SIZE, ERL_NIF_LATIN1)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"),
                               enif_make_atom(env, "invalid_config"));
     }
@@ -134,7 +128,6 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
                                                    config, strlen(config), &ctx->g) != success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "load_failed"));
     }
-	printf("Loading model finished \n");
     return enif_make_atom(env, "ok");
 }
 
@@ -157,10 +150,21 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-	const char* input_text = "<|system|> You are a  assistant.";
-	printf("set input %s\n",input_text);
+	const char* input_text = "<|im_start|>翻译成英文：牛顿第一定律：任何一个物体总是保持静止状态或者匀速直线运动状态，直到有作用在它上面的外力迫使它改变这种状态为止。 如果作用在物体上的合力为零，则物体保持匀速直线运动。 即物体的速度保持不变且加速度为零。<|im_end|> <|im_start|>";
+
+	tensor_dimensions *dims = (tensor_dimensions *)malloc(sizeof(tensor_dimensions));
+    if (dims == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return 1;
+    }
+	dims ->size = 1;
+	dims -> buf = (uint32_t *)malloc(dims->size * sizeof(uint32_t));
+	dims->buf[0] = 1;
+
     tensor input_tensor = {
-        .data = (uint8_t*)input_text,
+		.dimensions = dims,
+		.type = u8,
+        .data = (uint8_t *)input_text,
     };
     if (g_wasi_nn_functions.set_input(ctx->ctx, ctx->exec_ctx, 0, &input_tensor)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "set_input_failed"));
@@ -186,24 +190,26 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-	printf("output stage1\n");
-    uint8_t output_buffer[MAX_OUTPUT_SIZE];
-    uint32_t output_size = sizeof(output_buffer);
+    uint8_t *output_buffer = (uint8_t *)malloc(MAX_OUTPUT_SIZE * sizeof(uint8_t));
+	if (output_buffer == NULL) {
+		fprintf(stderr, "OutputBuffer allocation failed\n");
+        free(output_buffer);
+        return 1;
+	}
+    uint32_t output_size;
     
     if (g_wasi_nn_functions.get_output(ctx->ctx, ctx->exec_ctx, 0, output_buffer, &output_size) != success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "get_output_failed"));
     }
-	printf("output stage2\n");
-    // Ensure null-termination if treating as string
-    if (output_size >= sizeof(output_buffer)) {
-        output_size = sizeof(output_buffer) - 1;
-    }
-    output_buffer[output_size] = '\0';
+    printf("Comput Output: %s\n", output_buffer);
     
-    printf("output: %s\n", output_buffer);
+	ERL_NIF_TERM result_bin;
+	unsigned char* bin_data = enif_make_new_binary(env, output_size, &result_bin);
+	memcpy(bin_data, output_buffer, output_size);
+	free(output_buffer);
     return enif_make_tuple2(env,
         enif_make_atom(env, "ok"),
-        enif_make_binary(env, output_buffer));
+        enif_make_string_len(env, (const char*)output_buffer, output_size, ERL_NIF_LATIN1));
 }
 static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {

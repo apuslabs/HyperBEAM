@@ -42,10 +42,10 @@ deinit_backend(_Context) ->
 	erlang:nif_error("NIF library not loaded").
 load_model_test() ->
 	% Skip test if model doesn't exist
-	ModelPath = "test/qwen1_5-0_5b-chat-q2_k.gguf",
+	% ModelPath = "test/qwen1_5-0_5b-chat-q2_k.gguf",
+	ModelPath = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
 	case filelib:is_regular(ModelPath) of
 		true ->
-			?event(ModelPath),
 			% Test init_backend
 			{ok, Context} = init_backend(),
 			try
@@ -54,7 +54,7 @@ load_model_test() ->
 				?assertNotEqual(undefined, Context),
 				
 				% Test load_model_with_config
-				Config = "{\"n_gpu_layers\":20}",
+				Config = "{\"enable_log\": true,\"enable_debug_log\": true,\"n_gpu_layers\": 32}",
 				
 				ok = load_by_name_with_config(Context,ModelPath, Config),
 				
@@ -69,6 +69,7 @@ load_model_test() ->
 				
 				% Test get_output
 				{ok, Output} = get_output(Context),
+				io:format("Got Output: ~n", Output),
 				?assertNotEqual("", Output)
 			catch
 				Error:Reason ->
