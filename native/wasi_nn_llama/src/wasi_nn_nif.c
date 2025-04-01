@@ -226,7 +226,7 @@ static ErlNifFunc nif_funcs[] = {
     {"init_backend", 0, nif_init_backend},
     {"load_by_name_with_config", 3, nif_load_by_name_with_config},
     {"init_execution_context", 1, nif_init_execution_context},
-    {"set_input", 1, nif_set_input},
+    {"set_input", 2, nif_set_input},
     {"compute", 1, nif_compute},
     {"get_output", 1, nif_get_output},
 	{"deinit_backend", 1, nif_deinit_backend}

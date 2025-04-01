@@ -138,7 +138,8 @@ run_inference(M1,M2,Opts)->
 	try
 		% Extract operation and operands from the message
 		?event("Start run_inference"),
-		PromptBinary = hb_converge:get(<<"Propmt">>, M2, Opts),
+		PromptBinary = hb_converge:get(<<"propmt">>, M2, Opts),
+		?event({prompt, PromptBinary}),
 		% Convert operation from binary to string
 		Prompt = binary_to_list(PromptBinary),
 		?event({calculator_input, Prompt}),
@@ -154,27 +155,25 @@ run_inference(M1,M2,Opts)->
 		}}
 	catch
 		error:{badarg, _} ->
-			?event({calculator_error, badarg}),
+			?event({run_inference_error, badarg}),
 			{error, <<"Invalid arguments for calculation">>};
 		error:{not_found, Key} ->
-			?event({calculator_error, {not_found, Key}}),
+			?event({run_inference_error, {not_found, Key}}),
 			{error, <<"Missing required parameter: ", Key/binary>>};
 		Error:Reason:Stack ->
-			?event({calculator_error, Error, Reason, Stack}),
-			{error, <<"Calculation failed">>}
+			?event({run_inference_error, Error, Reason, Stack}),
+			{error, <<"Run Inference failed">>}
 	end.
 run_inference_test()->
 	% Initialize test messages with device specification
 	M1 = #{<<"device">> => <<"wasi-nn@1.0">>},
-	?event("Starting device wasi_nn test"),
 		
 	% Test addition through HyperBEAM resolve
 	M2 = #{
 		<<"path">> => <<"run_inference">>,  % Specify the device function to call
 		<<"Propmt">> => <<"Hello, who are you">>
 	},
-	?event({run_inference_resolve, M2}),
-	{ok,Result} = hb_converge:resolve(M1,M2, #{}),
+	{ok,Result} = hb_converge:resolve(M1, M2, #{}),
 	?event(Result).
 
 % basic_aos_exec_test() ->
