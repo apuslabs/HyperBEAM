@@ -3,7 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -hb_debug(print).
 -on_load(init/0).
-
+-export([run_inference/1]).
 
 
 init() ->
@@ -31,7 +31,7 @@ load_by_name_with_config(_Context,_Path, _Config) ->
 init_execution_context(_Context) ->
     erlang:nif_error("NIF library not loaded").
 
-set_input(_Context) ->
+set_input(_Context,_Prompt) ->
     erlang:nif_error("NIF library not loaded").
 
 compute(_Context) ->
@@ -40,9 +40,9 @@ get_output(_Context) ->
     erlang:nif_error("NIF library not loaded").
 deinit_backend(_Context) ->
 	erlang:nif_error("NIF library not loaded").
-load_model_test() ->
-	% Skip test if model doesn't exist
+run_inference(Prompt)->
 	ModelPath = "test/qwen1_5-0_5b-chat-q2_k.gguf",
+	Config = "{\"n_gpu_layers\":20}",
 	case filelib:is_regular(ModelPath) of
 		true ->
 			?event(ModelPath),
@@ -50,26 +50,17 @@ load_model_test() ->
 			{ok, Context} = init_backend(),
 			try
 				% Print the context type for debugging
-				
 				?assertNotEqual(undefined, Context),
-				
-				% Test load_model_with_config
-				Config = "{\"n_gpu_layers\":20}",
-				
-				ok = load_by_name_with_config(Context,ModelPath, Config),
-				
+				ok = load_by_name_with_config(Context,ModelPath,Config),
 				% Test init_execution_context
 				ok = init_execution_context(Context),
-				
 				% Test set_input
-				ok = set_input(Context),
-				
+				ok = set_input(Context,Prompt),
 				% Test compute
 				ok = compute(Context),
-				
 				% Test get_output
 				{ok, Output} = get_output(Context),
-				?assertNotEqual("", Output)
+				?event(Output)
 			catch
 				Error:Reason ->
 					io:format("Test failed: ~p:~p~n", [Error, Reason]),
@@ -79,5 +70,47 @@ load_model_test() ->
 			ok = deinit_backend(Context)
 			end;
 		false ->
-			?debugMsg("Skipping test - model file not found")
+			?event("Skipping test - model file not found")
 	end.
+load_model_test() ->
+% Skip test if model doesn't exist
+ModelPath = "test/qwen1_5-0_5b-chat-q2_k.gguf",
+case filelib:is_regular(ModelPath) of
+	true ->
+		?event(ModelPath),
+		% Test init_backend
+		{ok, Context} = init_backend(),
+		Prompt = "Hello",
+		try
+			% Print the context type for debugging
+			
+			?assertNotEqual(undefined, Context),
+			
+			% Test load_model_with_config
+			Config = "{\"n_gpu_layers\":20}",
+			
+			ok = load_by_name_with_config(Context,ModelPath, Config),
+			
+			% Test init_execution_context
+			ok = init_execution_context(Context),
+			
+			% Test set_input
+			ok = set_input(Context,Prompt),
+			
+			% Test compute
+			ok = compute(Context),
+			
+			% Test get_output
+			{ok, Output} = get_output(Context),
+			?assertNotEqual("", Output)
+		catch
+			Error:Reason ->
+				io:format("Test failed: ~p:~p~n", [Error, Reason]),
+				erlang:error(Reason)
+		after
+		% Cleanup
+		ok = deinit_backend(Context)
+		end;
+	false ->
+		?debugMsg("Skipping test - model file not found")
+end.

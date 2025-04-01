@@ -4,7 +4,8 @@
 -export([init/3]).
 -export([load/3, load_by_name/3, load_by_name_with_config/3]).
 -export([init_execution_context/3, set_input/3, compute/3, get_output/3]).
-
+-export([run_inference/3]).
+-hb_debug(print).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -53,8 +54,7 @@ load_by_name_with_config(M1, M2, Opts) ->
     ),
     ?event({path_open, FilenamePtr, FilenameLen, ConfigPtr, ConfigLen, GraphPtr}),
     % TODO: read Filename and Config from WASM memory
-    Signature = hb_converge:get(<<"func-sig">>, M2, Opts),
-    ?event({signature, Signature}),
+
 
     % TODO: call dev_wasi_nn_nif
 
@@ -133,30 +133,74 @@ generate_wasi_nn_stack(File, Func, Params) ->
     {ok, Msg2} = hb_converge:resolve(Msg1, <<"init">>, #{}),
     Msg2.
 
-basic_aos_exec_test() ->
-    Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
-    Msg = gen_test_aos_msg("local wasinn = require(\"wasinn\"); wasinn.run_inference(\"model_path\",\"Hello World\")"),
-    Env = gen_test_env(),
-    Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-    {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
-    ?assertNotEqual(0, Ptr1),
-    hb_beamr_io:write(Instance, Ptr1, Msg),
-    {ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
-    ?assertNotEqual(0, Ptr2),
-    hb_beamr_io:write(Instance, Ptr2, Env),
-    % Read the strings to validate they are correctly passed
-    {ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
-    {ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
-    ?assertEqual(Env, EnvBin),
-    ?assertEqual(Msg, MsgBin),
-    Ready = Init#{ <<"wasm-params">> => [Ptr1, Ptr2] },
-    {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
-    [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
-    {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
-    ?event({got_output, Output}),
-    #{ <<"response">> := #{ <<"Output">> := #{ <<"data">> := Data }} }
-        = jiffy:decode(Output, [return_maps]),
-    ?assertEqual(<<"2">>, Data).
+run_inference(M1,M2,Opts)->
+	% TODO: call dev_wasi_nn_nif
+	try
+		% Extract operation and operands from the message
+		?event("Start run_inference"),
+		PromptBinary = hb_converge:get(<<"Propmt">>, M2, Opts),
+		% Convert operation from binary to string
+		Prompt = binary_to_list(PromptBinary),
+		?event({calculator_input, Prompt}),
+
+		% Perform calculation using NIF
+		Result = dev_wasi_nn_nif:run_inference(Prompt),
+
+		?event({calculator_result, Result}),
+
+		% Return the result in the expected format
+		{ok, #{
+			<<"result">> => Result
+		}}
+	catch
+		error:{badarg, _} ->
+			?event({calculator_error, badarg}),
+			{error, <<"Invalid arguments for calculation">>};
+		error:{not_found, Key} ->
+			?event({calculator_error, {not_found, Key}}),
+			{error, <<"Missing required parameter: ", Key/binary>>};
+		Error:Reason:Stack ->
+			?event({calculator_error, Error, Reason, Stack}),
+			{error, <<"Calculation failed">>}
+	end.
+run_inference_test()->
+	% Initialize test messages with device specification
+	M1 = #{<<"device">> => <<"wasi-nn@1.0">>},
+	?event("Starting device wasi_nn test"),
+		
+	% Test addition through HyperBEAM resolve
+	M2 = #{
+		<<"path">> => <<"run_inference">>,  % Specify the device function to call
+		<<"Propmt">> => <<"Hello, who are you">>
+	},
+	?event({run_inference_resolve, M2}),
+	{ok,Result} = hb_converge:resolve(M1,M2, #{}),
+	?event(Result).
+
+% basic_aos_exec_test() ->
+%     Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
+%     Msg = gen_test_aos_msg("local wasinn = require(\"wasinn\"); wasinn.run_inference(\"model_path\",\"Hello World\")"),
+%     Env = gen_test_env(),
+%     Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+%     {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
+%     ?assertNotEqual(0, Ptr1),
+%     hb_beamr_io:write(Instance, Ptr1, Msg),
+%     {ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
+%     ?assertNotEqual(0, Ptr2),
+%     hb_beamr_io:write(Instance, Ptr2, Env),
+%     % Read the strings to validate they are correctly passed
+%     {ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
+%     {ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
+%     ?assertEqual(Env, EnvBin),
+%     ?assertEqual(Msg, MsgBin),
+%     Ready = Init#{ <<"wasm-params">> => [Ptr1, Ptr2] },
+%     {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
+%     [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+%     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+%     ?event({got_output, Output}),
+%     #{ <<"response">> := #{ <<"Output">> := #{ <<"data">> := Data }} }
+%         = jiffy:decode(Output, [return_maps]),
+%     ?assertEqual(<<"2">>, Data).
 
 %%% Test Helpers
 gen_test_env() ->
