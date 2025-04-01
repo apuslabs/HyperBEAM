@@ -1,6 +1,6 @@
 #include "../include/wasi_nn_llamacpp.h"
 #include "../include/wasi_nn_logging.h"
-#define LIB_PATH "./native/wasi_nn_llama/libwasi_nn_llamacpp.so"
+#define LIB_PATH "./_build/wasi_nn/build/libwasi_nn_llamacpp.so"
 #define MAX_MODEL_PATH 256
 #define MAX_CONFIG_SIZE 1024
 #define MAX_OUTPUT_SIZE 8192
