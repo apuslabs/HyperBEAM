@@ -9,6 +9,7 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+
 %% @doc Initialize device state
 init(M1, _M2, Opts) ->
     ?event(initializing_wasi_nn),
@@ -131,29 +132,30 @@ generate_wasi_nn_stack(File, Func, Params) ->
         <<"wasm-params">> => Params
     },
     {ok, Msg2} = hb_converge:resolve(Msg1, <<"init">>, #{}),
+	%print msg2
+	?event({msg2,Msg2}),
     Msg2.
 
 run_inference(M1,M2,Opts)->
 	State = hb_converge:get(<<"state">>, M1, Opts),
-	% Extract operation and operands from the message
-	% ?event("Start run_inference"),
-	% PromptBinary = hb_converge:get(<<"propmt">>, M2, Opts),
-	% ?event({prompt, PromptBinary}),
-	% Convert operation from binary to string
-	% Prompt = binary_to_list(PromptBinary),
-	% ?event({calculator_input, Prompt}),
+    Instance = hb_private:get(<<"wasm/instance">>, State, Opts),
+    [VecsPtr, Len] = hb_converge:get(<<"args">>, M2, Opts),
+	{ok,Prompt} = hb_beamr_io:read(Instance, VecsPtr, Len),
 
-	% Perform calculation using NIF
-	Result = dev_wasi_nn_nif:run_inference("Hello"),
+	?event({len, Len}),
+	?event({vecsptr, VecsPtr}),
+	?event({prompt, Prompt}),
 
-	% ?event({calculator_result, Result}),
+	String = binary_to_list(Prompt),
+	% Perform  Run_inference using NIF
+	Result = dev_wasi_nn_nif:run_inference(String),
+
 
 	% Return the result in the expected format
 	
 	{ok, #{ <<"state">> => State, <<"results">> => [1] }}.
-
 wasi_nn_exec_test() ->
-	Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"lib_main">>, []),
+	Init = generate_wasi_nn_stack("test/process2.wasm", <<"lib_main">>, []),
 	hb_converge:resolve(Init, <<"compute">>, #{}).
 
 %%% Test Helpers

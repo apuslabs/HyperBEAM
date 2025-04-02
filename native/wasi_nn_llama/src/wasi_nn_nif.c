@@ -147,10 +147,21 @@ static ERL_NIF_TERM nif_init_execution_context(ErlNifEnv* env, int argc, const E
 static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     LlamaContext* ctx;
+	const char *input = (char *)malloc(MAX_MODEL_PATH * sizeof(char));
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-	const char* input_text = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\ntranslate the following text into english: \n牛顿第一定律：任何一个物体总是保持静止状态或者匀速直线运动状态，直到有作用在它上面的外力迫使它改变这种状态为止。 如果作用在物体上的合力为零，则物体保持匀速直线运动。 即物体的速度保持不变且加速度为零。<|im_end|>\n<|im_start|>assistant\n";
+	printf("Set input start\n");
+	// get input from argcs
+	if (argc < 2) {
+		printf("Invalid args\n");
+		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+	}
+	if (!enif_get_string(env, argv[1], input, MAX_MODEL_PATH, ERL_NIF_LATIN1)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_input"));
+    }
+	printf("input from env : %s\n", input);
+	char* input_text = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\ntranslate the following text into english: \n牛顿第一定律：任何一个物体总是保持静止状态或者匀速直线运动状态，直到有作用在它上面的外力迫使它改变这种状态为止。 如果作用在物体上的合力为零，则物体保持匀速直线运动。 即物体的速度保持不变且加速度为零。<|im_end|>\n<|im_start|>assistant\n";
 
 	tensor_dimensions *dims = (tensor_dimensions *)malloc(sizeof(tensor_dimensions));
     if (dims == NULL) {
@@ -166,6 +177,10 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 		.type = u8,
         .data = (uint8_t *)input_text,
     };
+	//if input is not empty , set input as input_tensor
+	if (input != NULL) {
+		input_tensor.data = (uint8_t *)input;
+	}
     if (g_wasi_nn_functions.set_input(ctx->ctx, ctx->exec_ctx, 0, &input_tensor)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "set_input_failed"));
     }
