@@ -291,7 +291,7 @@ void wasm_initialize_runtime(void* raw) {
 void wasm_execute_function(void* raw) {
     Proc* proc = (Proc*)raw;
     DRV_DEBUG("Calling function: %s", proc->current_function);
-    drv_lock(proc->is_running);
+    // drv_lock(proc->is_running);
     char* function_name = proc->current_function;
 
     // Find the function in the exports
@@ -396,7 +396,7 @@ void wasm_execute_function(void* raw) {
     DRV_DEBUG("Msg: %d", response_msg_res);
 
     wasm_val_vec_delete(&results);
-    proc->current_import = NULL;
+    // proc->current_import = NULL;
 
 	DRV_DEBUG("Unlocking is_running mutex: %p", proc->is_running);
     drv_unlock(proc->is_running);
