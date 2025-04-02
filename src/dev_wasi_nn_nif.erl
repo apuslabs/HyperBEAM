@@ -46,17 +46,18 @@ run_inference(Prompt) ->
             {ok, Context} = init_backend(),
             try
                 ?assertNotEqual(undefined, Context),
-                ok = load_by_name_with_config(Context, ModelPath, Config),
-                ok = init_execution_context(Context),
-                ok = set_input(Context, Prompt),
-                ok = compute(Context),
+				% TODO: check rets
+                load_by_name_with_config(Context, ModelPath, Config),
+                init_execution_context(Context),
+                set_input(Context, binary_to_list(Prompt)),
+                compute(Context),
                 get_output(Context)
             catch
                 Error:Reason ->
                     io:format("Test failed: ~p:~p~n", [Error, Reason]),
                     erlang:error(Reason)
             after
-                ok = deinit_backend(Context)
+                deinit_backend(Context)
             end;
         false ->
             ?event("Skipping test - model file not found")

@@ -138,8 +138,8 @@ run_inference(M1,M2,Opts)->
     Instance = hb_private:get(<<"wasm/instance">>, State, Opts),
     [VecsPtr, Len] = hb_converge:get(<<"args">>, M2, Opts),
 	{ok,Prompt} = hb_beamr_io:read(Instance, VecsPtr, Len),
-	?event({inference_prompt, Prompt}),
-	{ok, Output} = dev_wasi_nn_nif:run_inference("Hello"),
+	?event({inference_prompt, Prompt, is_binary(Prompt)}),
+	{ok, Output} = dev_wasi_nn_nif:run_inference(Prompt),
 	?event({inference_output, Output}),
 	{ok, Ptr} = hb_beamr_io:write_string(Instance, Output),
 	{ok, #{ <<"state">> => State, <<"results">> => [Ptr] }}.
