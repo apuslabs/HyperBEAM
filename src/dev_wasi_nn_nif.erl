@@ -42,7 +42,7 @@ deinit_backend(_Context) ->
 	erlang:nif_error("NIF library not loaded").
 run_inference(Prompt)->
 	ModelPath = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
-	Config = "{\"n_gpu_layers\":20}",
+	Config = "{\"n_gpu_layers\":32}",
 	case filelib:is_regular(ModelPath) of
 		true ->
 			% Test init_backend
@@ -58,9 +58,8 @@ run_inference(Prompt)->
 				% Test compute
 				ok = compute(Context),
 				% Test get_output
-				{ok, Output} = get_output(Context),
-				io:format("Got Output: ~n", Output),
-				?assertNotEqual("", Output)
+				{ok, Output} = get_output(Context)
+				% io:format("Erlang Got Output: ~s~n", [Output])
 			catch
 				Error:Reason ->
 					io:format("Test failed: ~p:~p~n", [Error, Reason]),

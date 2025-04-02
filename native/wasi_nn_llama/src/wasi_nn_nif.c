@@ -150,7 +150,7 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-	const char* input_text = "<|im_start|>翻译成英文：牛顿第一定律：任何一个物体总是保持静止状态或者匀速直线运动状态，直到有作用在它上面的外力迫使它改变这种状态为止。 如果作用在物体上的合力为零，则物体保持匀速直线运动。 即物体的速度保持不变且加速度为零。<|im_end|> <|im_start|>";
+	const char* input_text = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\ntranslate the following text into english: \n牛顿第一定律：任何一个物体总是保持静止状态或者匀速直线运动状态，直到有作用在它上面的外力迫使它改变这种状态为止。 如果作用在物体上的合力为零，则物体保持匀速直线运动。 即物体的速度保持不变且加速度为零。<|im_end|>\n<|im_start|>assistant\n";
 
 	tensor_dimensions *dims = (tensor_dimensions *)malloc(sizeof(tensor_dimensions));
     if (dims == NULL) {
@@ -202,14 +202,24 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "get_output_failed"));
     }
     printf("Comput Output: %s\n", output_buffer);
-    
-	ERL_NIF_TERM result_bin;
-	unsigned char* bin_data = enif_make_new_binary(env, output_size, &result_bin);
-	memcpy(bin_data, output_buffer, output_size);
-	free(output_buffer);
+
+	// Create a new binary term in Erlang
+    ERL_NIF_TERM result_bin;
+    unsigned char* bin_data = enif_make_new_binary(env, output_size, &result_bin);
+    if (!bin_data) {
+        free(output_buffer);
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "binary_creation_failed"));
+    }
+
+    // Copy the output_buffer into the Erlang binary
+    memcpy(bin_data, output_buffer, output_size);
+
+    // Free the output_buffer as it's no longer needed
+    free(output_buffer);
+              
     return enif_make_tuple2(env,
         enif_make_atom(env, "ok"),
-        enif_make_string_len(env, (const char*)output_buffer, output_size, ERL_NIF_LATIN1));
+		enif_make_atom(env, "output"));
 }
 static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {

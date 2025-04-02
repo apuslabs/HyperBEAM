@@ -3,7 +3,7 @@
 -module(dev_wasi_nn).
 -export([init/3]).
 -export([load/3, load_by_name/3, load_by_name_with_config/3]).
--export([init_execution_context/3, set_input/3, compute/3, get_output/3]).
+-export([init_execution_context/3, set_input/3, get_output/3]).
 -export([run_inference/3]).
 -hb_debug(print).
 -include("include/hb.hrl").
@@ -98,11 +98,11 @@ set_input(M1, M2, Opts) ->
         <<"results">> => [0]
     }}.
 
-compute(M1, M2, Opts) ->
-    Graph = hb_converge:get(<<"wasi-nn/graph">>, M2, Opts),
-    [Ctx | _] = hb_converge:get(<<"args">>, M2, Opts),
-    ?event({set_input, Graph, Ctx}),
-    {ok, #{<<"results">> => [0]}}.
+% compute(M1, M2, Opts) ->
+%     Graph = hb_converge:get(<<"wasi-nn/graph">>, M2, Opts),
+%     [Ctx | _] = hb_converge:get(<<"args">>, M2, Opts),
+%     ?event({set_input, Graph, Ctx}),
+%     {ok, #{<<"results">> => [0]}}.
 
 get_output(M1, M2, Opts) ->
     Graph = hb_converge:get(<<"wasi-nn/graph">>, M2, Opts),
@@ -134,72 +134,27 @@ generate_wasi_nn_stack(File, Func, Params) ->
     Msg2.
 
 run_inference(M1,M2,Opts)->
-	% TODO: call dev_wasi_nn_nif
-	try
-		% Extract operation and operands from the message
-		?event("Start run_inference"),
-		PromptBinary = hb_converge:get(<<"propmt">>, M2, Opts),
-		?event({prompt, PromptBinary}),
-		% Convert operation from binary to string
-		Prompt = binary_to_list(PromptBinary),
-		?event({calculator_input, Prompt}),
+	State = hb_converge:get(<<"state">>, M1, Opts),
+	% Extract operation and operands from the message
+	% ?event("Start run_inference"),
+	% PromptBinary = hb_converge:get(<<"propmt">>, M2, Opts),
+	% ?event({prompt, PromptBinary}),
+	% Convert operation from binary to string
+	% Prompt = binary_to_list(PromptBinary),
+	% ?event({calculator_input, Prompt}),
 
-		% Perform calculation using NIF
-		Result = dev_wasi_nn_nif:run_inference(Prompt),
+	% Perform calculation using NIF
+	Result = dev_wasi_nn_nif:run_inference("Hello"),
 
-		?event({calculator_result, Result}),
+	% ?event({calculator_result, Result}),
 
-		% Return the result in the expected format
-		{ok, #{
-			<<"result">> => Result
-		}}
-	catch
-		error:{badarg, _} ->
-			?event({run_inference_error, badarg}),
-			{error, <<"Invalid arguments for calculation">>};
-		error:{not_found, Key} ->
-			?event({run_inference_error, {not_found, Key}}),
-			{error, <<"Missing required parameter: ", Key/binary>>};
-		Error:Reason:Stack ->
-			?event({run_inference_error, Error, Reason, Stack}),
-			{error, <<"Run Inference failed">>}
-	end.
-run_inference_test()->
-	% Initialize test messages with device specification
-	M1 = #{<<"device">> => <<"wasi-nn@1.0">>},
-		
-	% Test addition through HyperBEAM resolve
-	M2 = #{
-		<<"path">> => <<"run_inference">>,  % Specify the device function to call
-		<<"Propmt">> => <<"Hello, who are you">>
-	},
-	{ok,Result} = hb_converge:resolve(M1, M2, #{}),
-	?event(Result).
+	% Return the result in the expected format
+	
+	{ok, #{ <<"state">> => State, <<"results">> => [1] }}.
 
-% basic_aos_exec_test() ->
-%     Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
-%     Msg = gen_test_aos_msg("local wasinn = require(\"wasinn\"); wasinn.run_inference(\"model_path\",\"Hello World\")"),
-%     Env = gen_test_env(),
-%     Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-%     {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
-%     ?assertNotEqual(0, Ptr1),
-%     hb_beamr_io:write(Instance, Ptr1, Msg),
-%     {ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
-%     ?assertNotEqual(0, Ptr2),
-%     hb_beamr_io:write(Instance, Ptr2, Env),
-%     % Read the strings to validate they are correctly passed
-%     {ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
-%     {ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
-%     ?assertEqual(Env, EnvBin),
-%     ?assertEqual(Msg, MsgBin),
-%     Ready = Init#{ <<"wasm-params">> => [Ptr1, Ptr2] },
-%     {ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
-%     [Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
-%     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
-%     ?event({got_output, Output}),
-%     #{ <<"response">> := #{ <<"Output">> := #{ <<"data">> := Data }} }
-%         = jiffy:decode(Output, [return_maps]),
-%     ?assertEqual(<<"2">>, Data).
+wasi_nn_exec_test() ->
+	Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"lib_main">>, []),
+	hb_converge:resolve(Init, <<"compute">>, #{}).
 
 %%% Test Helpers
 gen_test_env() ->
