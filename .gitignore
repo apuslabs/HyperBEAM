@@ -35,3 +35,4 @@ cache-*
 
 *.dot
 *.svg
+*.wat

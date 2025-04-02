@@ -5,7 +5,6 @@
 -export([load/3, load_by_name/3, load_by_name_with_config/3]).
 -export([init_execution_context/3, set_input/3, get_output/3]).
 -export([run_inference/3]).
--hb_debug(print).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -132,8 +131,6 @@ generate_wasi_nn_stack(File, Func, Params) ->
         <<"wasm-params">> => Params
     },
     {ok, Msg2} = hb_converge:resolve(Msg1, <<"init">>, #{}),
-	%print msg2
-	?event({msg2,Msg2}),
     Msg2.
 
 run_inference(M1,M2,Opts)->
@@ -141,26 +138,24 @@ run_inference(M1,M2,Opts)->
     Instance = hb_private:get(<<"wasm/instance">>, State, Opts),
     [VecsPtr, Len] = hb_converge:get(<<"args">>, M2, Opts),
 	{ok,Prompt} = hb_beamr_io:read(Instance, VecsPtr, Len),
+	?event({inference_prompt, Prompt}),
+	{ok, Output} = dev_wasi_nn_nif:run_inference("Hello"),
+	?event({inference_output, Output}),
+	{ok, Ptr} = hb_beamr_io:write_string(Instance, Output),
+	{ok, #{ <<"state">> => State, <<"results">> => [Ptr] }}.
 
-	?event({len, Len}),
-	?event({vecsptr, VecsPtr}),
-	?event({prompt, Prompt}),
-
-	String = binary_to_list(Prompt),
-	% Perform  Run_inference using NIF
-	Result = dev_wasi_nn_nif:run_inference(String),
-
-
-	% Return the result in the expected format
-	
-	{ok, #{ <<"state">> => State, <<"results">> => [1] }}.
 wasi_nn_exec_test() ->
-	Init = generate_wasi_nn_stack("test/process2.wasm", <<"lib_main">>, []),
-	hb_converge:resolve(Init, <<"compute">>, #{}).
+	Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"lib_main">>, []),
+	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+	{ok, StateRes} = hb_converge:resolve(Init, <<"compute">>, #{}),
+	[Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+	{ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+	?event({wasm_output, Output}),
+	?assertNotEqual(<<"">>, Output).
 
 %%% Test Helpers
-gen_test_env() ->
-    <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
+% gen_test_env() ->
+%     <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
 
-gen_test_aos_msg(Command) ->
-    <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"", (list_to_binary(Command))/binary, "\"}\0">>.
+% gen_test_aos_msg(Command) ->
+%     <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"", (list_to_binary(Command))/binary, "\"}\0">>.

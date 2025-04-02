@@ -133,7 +133,6 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
 
 static ERL_NIF_TERM nif_init_execution_context(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-	printf("Init execution context start\n");
     LlamaContext* ctx;
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args_init_execution"));
@@ -193,7 +192,6 @@ static ERL_NIF_TERM nif_compute(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
-    printf("Computing response...\n");
     if (g_wasi_nn_functions.compute(ctx->ctx, ctx->exec_ctx)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "compute_failed"));
     }
@@ -216,7 +214,6 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     if (g_wasi_nn_functions.get_output(ctx->ctx, ctx->exec_ctx, 0, output_buffer, &output_size) != success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "get_output_failed"));
     }
-    printf("Comput Output: %s\n", output_buffer);
 
 	// Create a new binary term in Erlang
     ERL_NIF_TERM result_bin;
@@ -231,10 +228,10 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 
     // Free the output_buffer as it's no longer needed
     free(output_buffer);
-              
+
     return enif_make_tuple2(env,
         enif_make_atom(env, "ok"),
-		enif_make_atom(env, "output"));
+		result_bin);
 }
 static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
