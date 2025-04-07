@@ -8,8 +8,10 @@ WAMR_DIR = _build/wamr
 WASI_NN_DIR = _build/wasi_nn
 ifdef HB_DEBUG
 	WAMR_FLAGS = -DWAMR_ENABLE_LOG=1 -DWAMR_BUILD_DUMP_CALL_STACK=1 -DCMAKE_BUILD_TYPE=Debug
+	WASI_NN_FLAGS = -DCMAKE_BUILD_TYPE=Debug
 else
 	WAMR_FLAGS = -DCMAKE_BUILD_TYPE=Release
+	WASI_NN_FLAGS = -DCMAKE_BUILD_TYPE=Release
 endif
 
 UNAME_S := $(shell uname -s)
@@ -28,14 +30,17 @@ else
 endif
 
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so
+wasi_nn: $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
 	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
-
+debug-wasi-nn: debug-clean $(WASI_NN_DIR)
+	HB_DEBUG=1 make $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so
+	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 debug-clean:
 	rm -rf priv
 	rm -rf $(WAMR_DIR)/lib
+	rm -rf $(WASI_NN_DIR)/build
 
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
@@ -77,9 +82,9 @@ $(WASI_NN_DIR):
 		https://github.com/apuslabs/wasi_nn_backend.git \
 		$(WASI_NN_DIR)
 
-$(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so: $(WASI_NN_DIR) 
+$(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so: $(WASI_NN_DIR) 
 	cmake \
-		$(WAMR_FLAGS) \
+		$(WASI_NN_FLAGS) \
 		-S $(WASI_NN_DIR) \
 		-B $(WASI_NN_DIR)/build 
 	make -C $(WASI_NN_DIR)/build

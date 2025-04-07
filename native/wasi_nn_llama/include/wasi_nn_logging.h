@@ -1,15 +1,15 @@
-#include <pthread.h>
-#include <stdarg.h>
-#include <string.h>
-#include <time.h>
 #ifndef HB_LOGGING_H
 #define HB_LOGGING_H
-
 
 // Enable debug logging by default if not defined
 #define HB_DEBUG 0
 #ifndef HB_DEBUG
 #endif
+
+#include <pthread.h>
+#include <stdarg.h>
+#include <string.h>
+#include <time.h>
 
 
 #define DRV_DEBUG(format, ...) beamr_print(HB_DEBUG, __FILE__, __LINE__, format, ##__VA_ARGS__)

@@ -1,6 +1,6 @@
 #include "../include/wasi_nn_llamacpp.h"
 #include "../include/wasi_nn_logging.h"
-#define LIB_PATH "./_build/wasi_nn/build/libwasi_nn_llamacpp.so"
+#define LIB_PATH "./native/wasi_nn_llama/libwasi_nn_llamacpp.so"
 #define MAX_MODEL_PATH 256
 #define MAX_INPUT_SIZE 4096
 #define MAX_CONFIG_SIZE 1024
@@ -34,11 +34,11 @@ static void llama_context_destructor(ErlNifEnv* env, void* obj)
 
 static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
-    printf("Load nif start\n");
+    DRV_PRINT("Load nif start");
 	
 	g_wasi_nn_functions.handle = dlopen(LIB_PATH, RTLD_LAZY);
     if (!g_wasi_nn_functions.handle) {
-        printf("Failed to load wasi library: %s\n", dlerror());
+        DRV_PRINT("Failed to load wasi library: %s", dlerror());
         return 1;
     }
 	// Load all required functions once
@@ -70,19 +70,19 @@ static ERL_NIF_TERM nif_init_backend(ErlNifEnv* env, int argc, const ERL_NIF_TER
 {
     LlamaContext* ctx = enif_alloc_resource(llama_context_resource, sizeof(LlamaContext));
     if (!ctx) {
-        printf("Failed to allocate LlamaContext resource\n");
+        DRV_PRINT("Failed to allocate LlamaContext resource");
         return enif_make_tuple2(env, enif_make_atom(env, "error"), 
                               enif_make_atom(env, "allocation_failed"));
     }
-	printf("Initializing backend...\n");
+	DRV_PRINT("Initializing backend...");
     wasi_nn_error err = g_wasi_nn_functions.init_backend(&ctx->ctx);
     if (err != success) {
-        printf("Backend initialization failed with error: %d\n", err);
+        DRV_PRINT("Backend initialization failed with error: %d", err);
         enif_release_resource(ctx);
         return enif_make_tuple2(env, enif_make_atom(env, "error"), 
                               enif_make_atom(env, "init_failed"));
     }
-	printf("nif_init_backend finished \n");
+	DRV_PRINT("nif_init_backend finished");
     ERL_NIF_TERM ctx_term = enif_make_resource(env, ctx);
     return enif_make_tuple2(env, enif_make_atom(env, "ok"), ctx_term);
 }
@@ -110,7 +110,7 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
 
 	if(!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx))
 	{
-		printf("Invalid context\n");
+		DRV_PRINT("Invalid context\n");
 		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_context"));
 	}
     if (!enif_get_string(env, argv[1], model_path, MAX_MODEL_PATH, ERL_NIF_LATIN1)) {
@@ -122,7 +122,7 @@ static ERL_NIF_TERM nif_load_by_name_with_config(ErlNifEnv* env, int argc, const
         return enif_make_tuple2(env, enif_make_atom(env, "error"),
                               enif_make_atom(env, "invalid_config"));
     }
-	printf("Loading model: %s %s\n", model_path, config);
+	DRV_PRINT("Loading model: %s %s\n", model_path, config);
 	
     if (g_wasi_nn_functions.load_by_name_with_config(ctx->ctx, model_path, strlen(model_path), 
                                                    config, strlen(config), &ctx->g) != success) {
@@ -152,18 +152,18 @@ static ERL_NIF_TERM nif_set_input(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     }
 	// get input from argcs
 	if (argc < 2) {
-		printf("Invalid args\n");
+		DRV_PRINT("Invalid args\n");
 		return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
 	}
 	if (!enif_get_string(env, argv[1], input, MAX_MODEL_PATH, ERL_NIF_LATIN1)) {
-		printf("Invalid input\n");
+		DRV_PRINT("Invalid input\n");
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_input"));
     }
-	printf("Loading input : %s\n", input);
+	DRV_PRINT("Loading input : %s\n", input);
 	
 	tensor_dimensions *dims = (tensor_dimensions *)malloc(sizeof(tensor_dimensions));
     if (dims == NULL) {
-        fprintf(stderr, "Memory allocation failed\n");
+        DRV_PRINT(stderr, "Memory allocation failed\n");
         return 1;
     }
 	dims ->size = 1;
@@ -200,7 +200,7 @@ static ERL_NIF_TERM nif_get_output(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     }
     uint8_t *output_buffer = (uint8_t *)malloc(MAX_OUTPUT_SIZE * sizeof(uint8_t));
 	if (output_buffer == NULL) {
-		fprintf(stderr, "OutputBuffer allocation failed\n");
+		DRV_PRINT(stderr, "OutputBuffer allocation failed\n");
         free(output_buffer);
         return 1;
 	}
