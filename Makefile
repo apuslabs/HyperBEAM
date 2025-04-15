@@ -30,12 +30,12 @@ else
 endif
 
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-wasi_nn: $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so
+wasi_nn: $(WASI_NN_DIR)/build/libllama_runtime.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
 	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 debug-wasi-nn: debug-clean $(WASI_NN_DIR)
-	HB_DEBUG=1 make $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so
+	HB_DEBUG=1 make $(WASI_NN_DIR)/build/libllama_runtime.so
 	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 debug-clean:
 	rm -rf priv
@@ -80,15 +80,15 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 $(WASI_NN_DIR):
 	git clone \
 		https://github.com/apuslabs/wasi_nn_backend.git \
-		$(WASI_NN_DIR)
+		$(WASI_NN_DIR) \
 
-$(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so: $(WASI_NN_DIR) 
+$(WASI_NN_DIR)/build/libllama_runtime.so: $(WASI_NN_DIR) 
 	cmake \
 		$(WASI_NN_FLAGS) \
 		-S $(WASI_NN_DIR) \
 		-B $(WASI_NN_DIR)/build 
 	make -C $(WASI_NN_DIR)/build
-	cp $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so ./native/wasi_nn_llama
+	cp $(WASI_NN_DIR)/build/libllama_runtime.so ./native/wasi_nn_llama
 clean:
 	rebar3 clean
 

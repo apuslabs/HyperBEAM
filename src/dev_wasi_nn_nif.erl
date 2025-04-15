@@ -2,8 +2,8 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -on_load(init/0).
--export([run_inference/1]).
-
+-export([run_inference/2,initialize_llama_runtime/2,cleanup_llama_runtime/1]).
+-hb_debug(print).
 init() ->
     PrivDir = code:priv_dir(hb),
     Path = filename:join(PrivDir, "wasi_nn"),
@@ -20,45 +20,22 @@ init() ->
             exit({load_failed, Reason})
     end.
 
-init_backend() ->
+
+
+initialize_llama_runtime(_Path, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-load_by_name_with_config(_Context, _Path, _Config) ->
+cleanup_llama_runtime(Context) ->
     erlang:nif_error("NIF library not loaded").
 
-init_execution_context(_Context) ->
-    erlang:nif_error("NIF library not loaded").
+run_inference(Context,Prompt) ->
+	erlang:nif_error("NIF library not loaded").
 
-set_input(_Context, _Prompt) ->
-    erlang:nif_error("NIF library not loaded").
-
-compute(_Context) ->
-    erlang:nif_error("NIF library not loaded").
-get_output(_Context) ->
-    erlang:nif_error("NIF library not loaded").
-deinit_backend(_Context) ->
-    erlang:nif_error("NIF library not loaded").
-run_inference(Prompt) ->
-    ModelPath = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
-    Config = "{\"n_gpu_layers\":32}",
-    case filelib:is_regular(ModelPath) of
-        true ->
-            {ok, Context} = init_backend(),
-            try
-                ?assertNotEqual(undefined, Context),
-				% TODO: check rets
-                load_by_name_with_config(Context, ModelPath, Config),
-                init_execution_context(Context),
-                set_input(Context, binary_to_list(Prompt)),
-                compute(Context),
-                get_output(Context)
-            catch
-                Error:Reason ->
-                    io:format("Test failed: ~p:~p~n", [Error, Reason]),
-                    erlang:error(Reason)
-            after
-                deinit_backend(Context)
-            end;
-        false ->
-            ?event("Skipping test - model file not found")
-    end.
+run_inference_test() ->
+	ModelPath = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
+    Config = "{\"n_gpu_layers\":98,\"n_ctx\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+	Prompt = "Hello, who are you ",
+	{ok, Context} = dev_wasi_nn_nif:initialize_llama_runtime(ModelPath, Config),
+	{ok, Output} = dev_wasi_nn_nif:run_inference(Context,Prompt),
+	ok = dev_wasi_nn_nif:cleanup_llama_runtime(Context),
+	?assertNotEqual("",Output).

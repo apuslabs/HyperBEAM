@@ -7,7 +7,7 @@
 -export([run_inference/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
-
+-hb_debug(print).
 
 %% @doc Initialize device state
 init(M1, _M2, Opts) ->
