@@ -16,27 +16,26 @@ snapshot(Msg1, _Msg2, _Opts) -> {ok, Msg1}.
 
 compute(Msg1, Msg2, Opts) ->
     RawProcessID = dev_process:process_id(Msg1, #{}, Opts),
-    Slot = hb_converge:get(<<"slot">>, Msg2, Opts),
     OutputPrefix = dev_stack:prefix(Msg1, Msg2, Opts),
     ProcessID =
         case RawProcessID of
-            not_found -> hb_converge:get(<<"process-id">>, Msg2, Opts);
+            not_found -> hb_ao:get(<<"process-id">>, Msg2, Opts);
             ProcID -> ProcID
         end,
-    Res = do_compute(ProcessID, Slot, Opts),
+    Res = do_compute(ProcessID, Msg2, Opts),
     case Res of
         {ok, JSONRes} ->
             ?event(
                 {compute_lite_res,
                     {process_id, ProcessID},
-                    {slot, Slot},
+                    {slot, hb_ao:get(<<"slot">>, Msg2, Opts)},
                     {json_res, {string, JSONRes}},
                     {req, Msg2}
                 }
             ),
             {ok, Msg} = dev_json_iface:json_to_message(JSONRes, Opts),
             {ok,
-                hb_converge:set(
+                hb_ao:set(
                     Msg1,
                     #{
                         <<OutputPrefix/binary, "/results">> => Msg,
@@ -54,23 +53,46 @@ compute(Msg1, Msg2, Opts) ->
     end.
 
 %% @doc Execute computation on a remote machine via relay and the JSON-Iface.
-do_compute(ProcID, Slot, Opts) ->
-    Res = 
-        hb_converge:resolve(#{ <<"device">> => <<"relay@1.0">> }, #{
-            <<"path">> => <<"call">>,
-            <<"relay-path">> =>
-                <<
-                    "/result/",
-                    (integer_to_binary(Slot))/binary,
-                    "?process-id=",
-                    ProcID/binary
-                >>
+do_compute(ProcID, Msg2, Opts) ->
+    ?event({do_compute_msg, {req, Msg2}}),
+    Slot = hb_ao:get(<<"slot">>, Msg2, Opts),
+    {ok, AOS2 = #{ <<"body">> := Body }} =
+        dev_scheduler_formats:assignments_to_aos2(
+            ProcID,
+            #{
+                Slot => Msg2
             },
+            false,
             Opts
+        ),
+    ?event({do_compute_msg, {aos2, {string, Body}}}),
+    Res = 
+        hb_ao:resolve(
+            #{
+                <<"device">> => <<"relay@1.0">>,
+                <<"content-type">> => <<"application/json">>
+            },
+            AOS2#{
+                <<"path">> => <<"call">>,
+                <<"relay-method">> => <<"POST">>,
+                <<"relay-body">> => Body,
+                <<"relay-path">> =>
+                    <<
+                        "/result/",
+                        (integer_to_binary(Slot))/binary,
+                        "?process-id=",
+                        ProcID/binary
+                    >>,
+                <<"content-type">> => <<"application/json">>
+            },
+            Opts#{
+                hashpath => ignore,
+                cache_control => [<<"no-store">>, <<"no-cache">>]
+            }
         ),
     case Res of
         {ok, Response} ->
-            JSONRes = hb_converge:get(<<"body">>, Response, Opts),
+            JSONRes = hb_ao:get(<<"body">>, Response, Opts),
             ?event({
                 delegated_compute_res_metadata,
                 {req, maps:without([<<"body">>], Response)}

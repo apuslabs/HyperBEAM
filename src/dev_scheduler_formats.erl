@@ -9,6 +9,7 @@
 -module(dev_scheduler_formats).
 -export([assignments_to_bundle/4, assignments_to_aos2/4]).
 -export([aos2_to_assignments/3, aos2_to_assignment/2]).
+-export([aos2_normalize_types/1]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
@@ -16,12 +17,13 @@
 assignments_to_bundle(ProcID, Assignments, More, Opts) ->
     TimeInfo = ar_timestamp:get(),
     assignments_to_bundle(ProcID, Assignments, More, TimeInfo, Opts).
-assignments_to_bundle(ProcID, Assignments, More, TimeInfo, Opts) ->
+assignments_to_bundle(ProcID, Assignments, More, TimeInfo, RawOpts) ->
+    Opts = format_opts(RawOpts),
     {Timestamp, Height, Hash} = TimeInfo,
     {ok, #{
         <<"type">> => <<"schedule">>,
         <<"process">> => hb_util:human_id(ProcID),
-        <<"continues">> => atom_to_binary(More, utf8),
+        <<"continues">> => hb_util:atom(More),
         <<"timestamp">> => hb_util:int(Timestamp),
         <<"block-height">> => hb_util:int(Height),
         <<"block-hash">> => hb_util:human_id(Hash),
@@ -30,7 +32,7 @@ assignments_to_bundle(ProcID, Assignments, More, TimeInfo, Opts) ->
                 lists:map(
                     fun(Assignment) ->
                         {
-                            hb_converge:get(
+                            hb_ao:get(
                                 <<"slot">>,
                                 Assignment,
                                 Opts#{ hashpath => ignore }
@@ -44,49 +46,38 @@ assignments_to_bundle(ProcID, Assignments, More, TimeInfo, Opts) ->
     }}.
 
 %%% Return legacy net-SU compatible results.
-assignments_to_aos2(ProcID, Assignments, More, Opts) when is_map(Assignments) ->
-    SortedKeys =
-        lists:sort(
-            lists:map(
-                fun hb_util:int/1,
-                maps:keys(
-                    maps:without(
-                        [<<"priv">>, <<"attestations">>],
-                        Assignments
-                    )
-                )
-            )
-        ),
-    ListAssignments =
-        lists:map(
-            fun(Key) ->
-                hb_converge:get(Key, Assignments, Opts)
-            end,
-            SortedKeys
-        ),
-    assignments_to_aos2(ProcID, ListAssignments, More, Opts);
-assignments_to_aos2(ProcID, Assignments, More, Opts) ->
+assignments_to_aos2(ProcID, Assignments, More, RawOpts) when is_map(Assignments) ->
+    assignments_to_aos2(
+        ProcID,
+        hb_util:message_to_ordered_list(Assignments),
+        More,
+        format_opts(RawOpts)
+    );
+assignments_to_aos2(ProcID, Assignments, More, RawOpts) ->
+    Opts = format_opts(RawOpts),
     {Timestamp, Height, Hash} = ar_timestamp:get(),
     BodyStruct = 
-        {[
-            {<<"page_info">>,
-                {[
-                    {<<"process">>, hb_util:human_id(ProcID)},
-                    {<<"has_next_page">>, More},
-                    {<<"timestamp">>, list_to_binary(integer_to_list(Timestamp))},
-                    {<<"block-height">>, list_to_binary(integer_to_list(Height))},
-                    {<<"block-hash">>, hb_util:human_id(Hash)}
-                ]}
-            },
-            {<<"edges">>, [
-                {[
-                    {<<"cursor">>, cursor(Assignment, Opts)},
-                    {<<"node">>, assignment_to_aos2(Assignment, Opts)}
-                ]}
-                || Assignment <- Assignments
-            ]}
-        ]},
-    Encoded = iolist_to_binary(lists:flatten([jiffy:encode(BodyStruct)])),
+        #{
+            <<"page_info">> =>
+                #{
+                    <<"process">> => hb_util:human_id(ProcID),
+                    <<"has_next_page">> => More,
+                    <<"timestamp">> => list_to_binary(integer_to_list(Timestamp)),
+                    <<"block-height">> => list_to_binary(integer_to_list(Height)),
+                    <<"block-hash">> => hb_util:human_id(Hash)
+                },
+            <<"edges">> =>
+                lists:map(
+                    fun(Assignment) ->
+                        #{
+                            <<"cursor">> => cursor(Assignment, Opts),
+                            <<"node">> => assignment_to_aos2(Assignment, Opts)
+                        }
+                    end,
+                    Assignments
+                )
+        },
+    Encoded = hb_json:encode(BodyStruct),
     ?event({body_struct, BodyStruct}),
     ?event({encoded, {explicit, Encoded}}),
     {ok, 
@@ -99,23 +90,26 @@ assignments_to_aos2(ProcID, Assignments, More, Opts) ->
 %% @doc Generate a cursor for an assignment. This should be the slot number, at
 %% least in the case of mainnet `ao.N.1' assignments. In the case of legacynet
 %% (`ao.TN.1') assignments, we may want to use the assignment ID.
-cursor(Assignment, Opts) ->
-    hb_converge:get(<<"slot">>, Assignment, Opts#{ hashpath => ignore }).
+cursor(Assignment, RawOpts) ->
+    Opts = format_opts(RawOpts),
+    hb_ao:get(<<"slot">>, Assignment, Opts).
 
 %% @doc Convert an assignment to an AOS2-compatible JSON structure.
-assignment_to_aos2(Assignment, Opts) ->
-    Message = hb_converge:get(<<"body">>, Assignment, Opts),
+assignment_to_aos2(Assignment, RawOpts) ->
+    Opts = format_opts(RawOpts),
+    Message = hb_ao:get(<<"body">>, Assignment, Opts),
     AssignmentWithoutBody = maps:without([<<"body">>], Assignment),
-    {[
-        {<<"message">>,
-            dev_json_iface:message_to_json_struct(Message)},
-        {<<"assignment">>,
-            dev_json_iface:message_to_json_struct(AssignmentWithoutBody)}
-    ]}.
+    #{
+        <<"message">> =>
+            dev_json_iface:message_to_json_struct(Message),
+        <<"assignment">> =>
+            dev_json_iface:message_to_json_struct(AssignmentWithoutBody)
+    }.
 
 %% @doc Convert an AOS2-style JSON structure to a normalized HyperBEAM
 %% assignments response.
-aos2_to_assignments(ProcID, Body, Opts) ->
+aos2_to_assignments(ProcID, Body, RawOpts) ->
+    Opts = format_opts(RawOpts),
     Assignments = maps:get(<<"edges">>, Body, Opts),
     ?event({raw_assignments, Assignments}),
     ParsedAssignments =
@@ -130,34 +124,49 @@ aos2_to_assignments(ProcID, Body, Opts) ->
             _ ->
                 Last = lists:last(ParsedAssignments),
                 {
-                    hb_converge:get(<<"timestamp">>, Last, Opts),
-                    hb_converge:get(<<"block-height">>, Last, Opts),
-                    hb_converge:get(<<"block-hash">>, Last, Opts)
+                    hb_ao:get(<<"timestamp">>, Last, Opts),
+                    hb_ao:get(<<"block-height">>, Last, Opts),
+                    hb_ao:get(<<"block-hash">>, Last, Opts)
                 }
         end,
     assignments_to_bundle(ProcID, ParsedAssignments, false, TimeInfo, Opts).
 
 %% @doc Create and normalize an assignment from an AOS2-style JSON structure.
 %% NOTE: This method is destructive to the verifiability of the assignment.
-aos2_to_assignment(A, Opts) ->
+aos2_to_assignment(A, RawOpts) ->
+    Opts = format_opts(RawOpts),
     % Unwrap the node if it is provided
     Node = maps:get(<<"node">>, A, A),
-    {ok, Message} =
-        hb_gateway_client:result_to_message(
-            aos2_normalize_data(maps:get(<<"message">>, Node)),
-            Opts
-        ),
-    NormalizedMessage = aos2_normalize_types(Message),
-    ?event({message, Message}),
+    ?event({node, Node}),
     {ok, Assignment} =
         hb_gateway_client:result_to_message(
             aos2_normalize_data(maps:get(<<"assignment">>, Node)),
             Opts
         ),
     NormalizedAssignment = aos2_normalize_types(Assignment),
-    Res = NormalizedAssignment#{ <<"body">> => NormalizedMessage },
-    ?event({final_assignment, Res}),
-    Res.
+    {ok, Message} =
+        case maps:get(<<"message">>, Node) of
+            null ->
+                MessageID = maps:get(<<"message">>, Assignment),
+                ?event(error, {scheduler_did_not_provide_message, MessageID}),
+                case hb_cache:read(MessageID, Opts) of
+                    {ok, Msg} -> {ok, Msg};
+                    {error, _} ->
+                        throw({error,
+                            {message_not_given_by_scheduler_or_cache,
+                                MessageID}
+                            }
+                        )
+                end;
+            Body ->
+                hb_gateway_client:result_to_message(
+                    aos2_normalize_data(Body),
+                    Opts
+                )
+        end,
+    NormalizedMessage = aos2_normalize_types(Message),
+    ?event({message, Message}),
+    NormalizedAssignment#{ <<"body">> => NormalizedMessage }.
 
 %% @doc The `hb_gateway_client' module expects all JSON structures to at least
 %% have a `data' field. This function ensures that.
@@ -191,7 +200,16 @@ aos2_normalize_types(Msg) ->
         {
             aos2_normalized_types,
             {msg, Msg},
-            {anchor, hb_converge:get(<<"anchor">>, Msg, #{})}
+            {anchor, hb_ao:get(<<"anchor">>, Msg, <<>>, #{})}
         }
     ),
     Msg.
+
+%% @doc For all scheduler format operations, we do not calculate hashpaths,
+%% perform cache lookups, or await inprogress results.
+format_opts(Opts) ->
+    Opts#{
+        hashpath => ignore,
+        cache_control => [<<"no-cache">>, <<"no-store">>],
+        await_inprogress => false
+    }.

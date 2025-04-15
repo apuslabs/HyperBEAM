@@ -14,7 +14,6 @@
 %%% with a refusal to execute.
 -module(hb_opts).
 -export([get/1, get/2, get/3, load/1, default_message/0, mimic_default_types/2]).
--include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
 %% @doc The default configuration options of the hyperbeam node.
@@ -23,9 +22,6 @@ default_message() ->
         %%%%%%%% Functional options %%%%%%%%
         hb_config_location => <<"config.flat">>,
         initialized => true,
-        %% What protocol should the node use for HTTP requests?
-        %% Options: http1, http2, http3
-        protocol => http2,
         %% What HTTP client should the node use?
         %% Options: gun, httpc
         http_client => gun,
@@ -53,6 +49,8 @@ default_message() ->
         preloaded_devices => [
             #{<<"name">> => <<"ans104@1.0">>, <<"module">> => dev_codec_ans104},
             #{<<"name">> => <<"compute@1.0">>, <<"module">> => dev_cu},
+            #{<<"name">> => <<"cache@1.0">>, <<"module">> => dev_cache},
+            #{<<"name">> => <<"cacheviz@1.0">>, <<"module">> => dev_cacheviz},
             #{<<"name">> => <<"cron@1.0">>, <<"module">> => dev_cron},
             #{<<"name">> => <<"dedup@1.0">>, <<"module">> => dev_dedup},
             #{<<"name">> => <<"delegated-compute@1.0">>, <<"module">> => dev_delegated_compute},
@@ -61,9 +59,11 @@ default_message() ->
             #{<<"name">> => <<"genesis-wasm@1.0">>, <<"module">> => dev_genesis_wasm},
             #{<<"name">> => <<"greenzone@1.0">>, <<"module">> => dev_green_zone},
             #{<<"name">> => <<"httpsig@1.0">>, <<"module">> => dev_codec_httpsig},
+            #{<<"name">> => <<"hyperbuddy@1.0">>, <<"module">> => dev_hyperbuddy},
             #{<<"name">> => <<"json@1.0">>, <<"module">> => dev_codec_json},
             #{<<"name">> => <<"json-iface@1.0">>, <<"module">> => dev_json_iface},
             #{<<"name">> => <<"lookup@1.0">>, <<"module">> => dev_lookup},
+            #{<<"name">> => <<"lua@5.3a">>, <<"module">> => dev_lua},
             #{<<"name">> => <<"message@1.0">>, <<"module">> => dev_message},
             #{<<"name">> => <<"meta@1.0">>, <<"module">> => dev_meta},
             #{<<"name">> => <<"monitor@1.0">>, <<"module">> => dev_monitor},
@@ -108,8 +108,8 @@ default_message() ->
         wasm_allow_aot => false,
         %% Options for the relay device
         relay_http_client => httpc,
-        %% The default codec to use for attestation signatures.
-        attestation_device => <<"httpsig@1.0">>,
+        %% The default codec to use for commitment signatures.
+        commitment_device => <<"httpsig@1.0">>,
         %% Dev options
         mode => debug,
         % Every modification to `Opts` called directly by the node operator
@@ -123,9 +123,10 @@ default_message() ->
         stack_print_prefixes => ["hb", "dev", "ar"],
         debug_print_trace => short, % `short` | `false`. Has performance impact.
         short_trace_len => 5,
-        debug_hide_metadata => true,
+        debug_metadata => true,
         debug_ids => false,
-        debug_show_priv => if_present,
+        debug_committers => false,
+        debug_show_priv => false,
 		trusted => #{},
         routes => [
             #{
@@ -140,11 +141,11 @@ default_message() ->
                     [
                         #{
                             <<"prefix">> => <<"https://arweave-search.goldsky.com">>,
-                            <<"opts">> => #{ http_client => httpc }
+                            <<"opts">> => #{ http_client => httpc, protocol => http2 }
                         },
                         #{
                             <<"prefix">> => <<"https://arweave.net">>,
-                            <<"opts">> => #{ http_client => gun }
+                            <<"opts">> => #{ http_client => gun, protocol => http2 }
                         }
                     ]
             },
@@ -154,7 +155,7 @@ default_message() ->
                 <<"node">> =>
                     #{
                         <<"prefix">> => <<"https://arweave.net">>,
-                        <<"opts">> => #{ http_client => gun }
+                        <<"opts">> => #{ http_client => gun, protocol => http2 }
                     }
             }
         ],
@@ -186,6 +187,12 @@ default_message() ->
         store_all_signed => true,
         % Should the node use persistent processes?
         process_workers => false
+        % Should the node track and expose prometheus metrics?
+        % We do not set this explicitly, so that the hb_features:test() value
+        % can be used to determine if we should expose metrics instead,
+        % dynamically changing the configuration based on whether we are running
+        % tests or not. To override this, set the `prometheus' option explicitly.
+        % prometheus => false
     }.
 
 %% @doc Get an option from the global options, optionally overriding with a
@@ -233,6 +240,12 @@ get(Key, Default, Opts) ->
     % No preference was set in Opts, so we default to local.
     ?MODULE:get(Key, Default, Opts#{ prefer => local }).
 
+-ifdef(TEST).
+-define(DEFAULT_PRINT_OPTS, "error").
+-else.
+-define(DEFAULT_PRINT_OPTS, "error,http_short,compute_short,push_short").
+-endif.
+
 -define(ENV_KEYS,
     #{
         priv_key_location => {"HB_KEY", "hyperbeam-key.json"},
@@ -245,7 +258,8 @@ get(Key, Default, Opts) ->
                     (Str) when Str == "1" -> true;
                     (Str) when Str == "true" -> true;
                     (Str) -> string:tokens(Str, ",")
-                end
+                end,
+                ?DEFAULT_PRINT_OPTS
             }
     }
 ).
@@ -255,15 +269,38 @@ global_get(Key, Default) ->
     case maps:get(Key, ?ENV_KEYS, Default) of
         Default -> config_lookup(Key, Default);
         {EnvKey, ValParser, DefaultValue} when is_function(ValParser) ->
-            ValParser(os:getenv(EnvKey, DefaultValue));
+            ValParser(cached_os_env(EnvKey, normalize_default(DefaultValue)));
         {EnvKey, ValParser} when is_function(ValParser) ->
-            case os:getenv(EnvKey, not_found) of
+            case cached_os_env(EnvKey, not_found) of
                 not_found -> config_lookup(Key, Default);
                 Value -> ValParser(Value)
             end;
         {EnvKey, DefaultValue} ->
-            os:getenv(EnvKey, DefaultValue)
+            cached_os_env(EnvKey, DefaultValue)
     end.
+
+%% @doc Cache the result of os:getenv/1 in the process dictionary, as it never
+%% changes during the lifetime of a node.
+cached_os_env(Key, DefaultValue) ->
+    case erlang:get({os_env, Key}) of
+        undefined ->
+            case os:getenv(Key) of
+                false -> DefaultValue;
+                Value ->
+                    erlang:put({os_env, Key}, Value),
+                    Value
+            end;
+        Value -> Value
+    end.
+
+%% @doc Get an option from environment variables, optionally consulting the
+%% `hb_features' of the node if a conditional default tuple is provided.
+normalize_default({conditional, Feature, IfTest, Else}) ->
+    case hb_features:enabled(Feature) of
+        true -> IfTest;
+        false -> Else
+    end;
+normalize_default(Default) -> Default.
 
 %% @doc An abstraction for looking up configuration variables. In the future,
 %% this is the function that we will want to change to support a more dynamic
@@ -309,6 +346,9 @@ mimic_default_types(Map, Mode) ->
     
 %%% Tests
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
 global_get_test() ->
     ?assertEqual(debug, ?MODULE:get(mode)),
     ?assertEqual(debug, ?MODULE:get(mode, production)),
@@ -351,3 +391,4 @@ load_test() ->
     ?assertEqual(<<"https://ao.computer">>, maps:get(host, Conf)),
     % An atom, where the key contained a header-key `-' rather than a `_'.
     ?assertEqual(false, maps:get(await_inprogress, Conf)).
+-endif.

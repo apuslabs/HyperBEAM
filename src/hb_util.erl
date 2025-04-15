@@ -5,7 +5,8 @@
 -export([key_to_atom/2]).
 -export([encode/1, decode/1, safe_encode/1, safe_decode/1]).
 -export([find_value/2, find_value/3]).
--export([number/1, list_to_numbered_map/1, message_to_ordered_list/1]).
+-export([deep_merge/2, number/1, list_to_numbered_map/1]).
+-export([message_to_ordered_list/1, message_to_ordered_list/2]).
 -export([is_string_list/1, to_sorted_list/1, to_sorted_keys/1]).
 -export([hd/1, hd/2, hd/3]).
 -export([remove_common/2, to_lower/1]).
@@ -14,8 +15,8 @@
 -export([format_maybe_multiline/2, remove_trailing_noise/2]).
 -export([debug_print/4, debug_fmt/1, debug_fmt/2, eunit_print/2]).
 -export([print_trace/4, trace_macro_helper/5, print_trace_short/4]).
--export([ok/1, ok/2]).
--export([format_trace_short/1]).
+-export([ok/1, ok/2, until/1, until/2, until/3]).
+-export([format_trace_short/1, is_hb_module/1, is_hb_module/2, all_hb_modules/0]).
 -export([count/2, mean/1, stddev/1, variance/1]).
 -include("include/hb.hrl").
 
@@ -73,6 +74,26 @@ ok(Other, Opts) ->
 		throw -> throw({unexpected, Other});
 		_ -> {unexpected, Other}
 	end.
+
+%% @doc Utility function to wait for a condition to be true. Optionally,
+%% you can pass a function that will be called with the current count of
+%% iterations, returning an integer that will be added to the count. Once the
+%% condition is true, the function will return the count.
+until(Condition) ->
+    until(Condition, 0).
+until(Condition, Count) ->
+    until(Condition, fun() -> receive after 100 -> 1 end end, Count).
+until(Condition, Fun, Count) ->
+    case Condition() of
+        false ->
+            case apply(Fun, hb_ao:truncate_args(Fun, [Count])) of
+                {count, AddToCount} ->
+                    until(Condition, Fun, Count + AddToCount);
+                _ ->
+                    until(Condition, Fun, Count + 1)
+            end;
+        true -> Count
+    end.
 
 %% @doc Return the human-readable form of an ID of a message when given either
 %% a message explicitly, raw encoded ID, or an Erlang Arweave `tx' record.
@@ -136,7 +157,7 @@ human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 32 ->
 human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 43 ->
     Bin.
 
-%% @doc Return a short ID for the different types of IDs used in Converge.
+%% @doc Return a short ID for the different types of IDs used in AO-Core.
 short_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 32 ->
     short_id(human_id(Bin));
 short_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 43 ->
@@ -167,8 +188,7 @@ is_human_binary(Bin) when is_binary(Bin) ->
     case unicode:characters_to_binary(Bin) of
         {error, _, _} -> false;
         _ -> true
-    end;
-is_human_binary(_) -> false.
+    end.
 
 %% @doc Encode a binary to URL safe base64 binary string.
 encode(Bin) ->
@@ -206,6 +226,24 @@ to_hex(Bin) when is_binary(Bin) ->
         )
     ).
 
+%% @doc Deep merge two maps, recursively merging nested maps.
+deep_merge(Map1, Map2) when is_map(Map1), is_map(Map2) ->
+    maps:fold(
+        fun(Key, Value2, AccMap) ->
+            case maps:find(Key, AccMap) of
+                {ok, Value1} when is_map(Value1), is_map(Value2) ->
+                    % Both values are maps, recursively merge them
+                    AccMap#{Key => deep_merge(Value1, Value2)};
+                _ ->
+                    % Either the key doesn't exist in Map1 or at least one of 
+                    % the values isn't a map. Simply use the value from Map2
+                    AccMap#{ Key => Value2 }
+            end
+        end,
+        Map1,
+        Map2
+    ).
+
 %% @doc Label a list of elements with a number.
 number(List) ->
     lists:map(
@@ -224,14 +262,16 @@ message_to_ordered_list(Message) ->
     message_to_ordered_list(Message, #{}).
 message_to_ordered_list(Message, _Opts) when ?IS_EMPTY_MESSAGE(Message) ->
     [];
+message_to_ordered_list(List, _Opts) when is_list(List) ->
+    List;
 message_to_ordered_list(Message, Opts) ->
-    Keys = hb_converge:keys(Message, Opts),
-    IntKeys = lists:map(fun int/1, Keys),
-    message_to_ordered_list(Message, IntKeys, lists:min(IntKeys), Opts).
+    Keys = hb_ao:keys(Message, Opts),
+    IntKeys = lists:sort(lists:map(fun int/1, Keys)),
+    message_to_ordered_list(Message, IntKeys, erlang:hd(IntKeys), Opts).
 message_to_ordered_list(_Message, [], _Key, _Opts) ->
     [];
-message_to_ordered_list(Message, Keys, Key, Opts) ->
-    case hb_converge:get(Key, Message, Opts#{ hashpath => ignore }) of
+message_to_ordered_list(Message, [Key|Keys], Key, Opts) ->
+    case hb_ao:get(Key, Message, Opts#{ hashpath => ignore }) of
         undefined -> throw({missing_key, Key, {remaining_keys, Keys}});
         Value ->
             [
@@ -239,12 +279,14 @@ message_to_ordered_list(Message, Keys, Key, Opts) ->
             |
                 message_to_ordered_list(
                     Message,
-                    lists:delete(Key, Keys),
+                    Keys,
                     Key + 1,
                     Opts
                 )
             ]
-    end.
+    end;
+message_to_ordered_list(_Message, [Key|_Keys], ExpectedKey, _Opts) ->
+    throw({missing_key, {expected, ExpectedKey, {next, Key}}}).
 
 %% @doc Get the first element (the lowest integer key >= 1) of a numbered map.
 %% Optionally, it takes a specifier of whether to return the key or the value,
@@ -253,18 +295,18 @@ hd(Message) -> hd(Message, value).
 hd(Message, ReturnType) ->
     hd(Message, ReturnType, #{ error_strategy => throw }).
 hd(Message, ReturnType, Opts) -> 
-    hd(Message, hb_converge:keys(Message, Opts), 1, ReturnType, Opts).
+    hd(Message, hb_ao:keys(Message, Opts), 1, ReturnType, Opts).
 hd(_Map, [], _Index, _ReturnType, #{ error_strategy := throw }) ->
     throw(no_integer_keys);
 hd(_Map, [], _Index, _ReturnType, _Opts) -> undefined;
 hd(Message, [Key|Rest], Index, ReturnType, Opts) ->
-    case hb_converge:normalize_key(Key, Opts#{ error_strategy => return }) of
+    case hb_ao:normalize_key(Key, Opts#{ error_strategy => return }) of
         undefined ->
             hd(Message, Rest, Index + 1, ReturnType, Opts);
         Key ->
             case ReturnType of
                 key -> Key;
-                value -> hb_converge:resolve(Message, Key, #{})
+                value -> hb_ao:resolve(Message, Key, #{})
             end
     end.
 
@@ -300,7 +342,7 @@ remove_common(Rest, _) -> Rest.
 %% @doc Throw an exception if the Opts map has an `error_strategy' key with the
 %% value `throw'. Otherwise, return the value.
 maybe_throw(Val, Opts) ->
-    case hb_converge:get(error_strategy, Opts) of
+    case hb_ao:get(error_strategy, Opts) of
         throw -> throw(Val);
         _ -> Val
     end.
@@ -341,7 +383,11 @@ debug_fmt(X, Indent) ->
             prod ->
                 format_indented("[!PRINT FAIL!]", Indent);
             _ ->
-                format_indented("[PRINT FAIL:] ~80p", [X], Indent)
+                format_indented(
+                    "[PRINT FAIL:] ~80p~n===== PRINT ERROR WAS ~p:~p =====~n~p",
+                    [X, A, B, format_trace(C, hb_opts:get(stack_print_prefixes, [], #{}))],
+                    Indent
+                )
         end
     end.
 
@@ -544,7 +590,7 @@ format_trace([], _) -> [];
 format_trace([Item|Rest], Prefixes) ->
     case element(1, Item) of
         Atom when is_atom(Atom) ->
-            case trace_is_relevant(Atom, Prefixes) of
+            case is_hb_module(Atom, Prefixes) of
                 true ->
                     [
                         format_trace(Item, Prefixes) |
@@ -572,16 +618,22 @@ format_trace({Mod, Func, ArityOrTerm, Extras}, _Prefixes) ->
         1
     ).
 
-%% @doc Is the trace formatted string relevant to HyperBEAM?
-trace_is_relevant(Atom, Prefixes) when is_atom(Atom) ->
-    trace_is_relevant(atom_to_list(Atom), Prefixes);
-trace_is_relevant(Str, Prefixes) ->
+%% @doc Is the given module part of HyperBEAM?
+is_hb_module(Atom) ->
+    is_hb_module(Atom, hb_opts:get(stack_print_prefixes, [], #{})).
+is_hb_module(Atom, Prefixes) when is_atom(Atom) ->
+    is_hb_module(atom_to_list(Atom), Prefixes);
+is_hb_module(Str, Prefixes) ->
     case string:tokens(Str, "_") of
         [Pre|_] ->
             lists:member(Pre, Prefixes);
         _ ->
             false
     end.
+
+%% @doc Get all loaded modules that are loaded and are part of HyperBEAM.
+all_hb_modules() ->
+    lists:filter(fun(Module) -> is_hb_module(Module) end, erlang:loaded()).
 
 %% @doc Print a trace to the standard error stream.
 print_trace_short(Trace, Mod, Func, Line) ->
@@ -607,7 +659,7 @@ format_trace_short(_Max, _Latch, [], _Prefixes) -> [];
 format_trace_short(0, _Latch, _Trace, _Prefixes) -> [];
 format_trace_short(Max, Latch, [Item|Rest], Prefixes) ->
     Formatted = format_trace_short(Max, Latch, Item, Prefixes),
-    case {Latch, trace_is_relevant(Formatted, Prefixes)} of
+    case {Latch, is_hb_module(Formatted, Prefixes)} of
         {false, true} ->
             [Formatted | format_trace_short(Max - 1, true, Rest, Prefixes)];
         {false, false} ->

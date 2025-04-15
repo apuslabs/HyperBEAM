@@ -46,10 +46,10 @@
 %% a request. The default behavior if `pricing_device' or `p4_balances' are
 %% not set is to proceed, so it is important that a user initialize them.
 preprocess(State, Raw, NodeMsg) ->
-    PricingDevice = hb_converge:get(<<"pricing_device">>, State, false, NodeMsg),
-    LedgerDevice = hb_converge:get(<<"ledger_device">>, State, false, NodeMsg),
-    Messages = hb_converge:get(<<"body">>, Raw, NodeMsg#{ hashpath => ignore }),
-    Request = hb_converge:get(<<"request">>, Raw, NodeMsg),
+    PricingDevice = hb_ao:get(<<"pricing_device">>, State, false, NodeMsg),
+    LedgerDevice = hb_ao:get(<<"ledger_device">>, State, false, NodeMsg),
+    Messages = hb_ao:get(<<"body">>, Raw, NodeMsg#{ hashpath => ignore }),
+    Request = hb_ao:get(<<"request">>, Raw, NodeMsg),
     IsChargable = is_chargable_req(Request, NodeMsg),
     ?event(payment, {preprocess_with_devices, PricingDevice, LedgerDevice, {chargable, IsChargable}}),
     case {IsChargable, (PricingDevice =/= false) and (LedgerDevice =/= false)} of
@@ -65,7 +65,7 @@ preprocess(State, Raw, NodeMsg) ->
                 <<"body">> => Messages
             },
             ?event({p4_pricing_request, {devmsg, PricingMsg}, {req, PricingReq}}),
-            case hb_converge:resolve(PricingMsg, PricingReq, NodeMsg) of
+            case hb_ao:resolve(PricingMsg, PricingReq, NodeMsg) of
                 {error, Error} ->
                     % The device is unable to estimate the cost of the request,
                     % so we don't proceed.
@@ -89,7 +89,7 @@ preprocess(State, Raw, NodeMsg) ->
                             <<"request">> => Request
                         },
                     ?event(payment, {p4_pre_pricing_estimate, Price}),
-                    case hb_converge:resolve(LedgerMsg, LedgerReq, NodeMsg) of
+                    case hb_ao:resolve(LedgerMsg, LedgerReq, NodeMsg) of
                         {ok, true} ->
                             % The ledger device has confirmed that the user has
                             % enough funds for the request, so we proceed.
@@ -114,15 +114,15 @@ preprocess(State, Raw, NodeMsg) ->
 
 %% @doc Postprocess the request after it has been fulfilled.
 postprocess(State, RawResponse, NodeMsg) ->
-    PricingDevice = hb_converge:get(<<"pricing_device">>, State, false, NodeMsg),
-    LedgerDevice = hb_converge:get(<<"ledger_device">>, State, false, NodeMsg),
+    PricingDevice = hb_ao:get(<<"pricing_device">>, State, false, NodeMsg),
+    LedgerDevice = hb_ao:get(<<"ledger_device">>, State, false, NodeMsg),
     Response =
-        hb_converge:get(
+        hb_ao:get(
             <<"body">>,
             RawResponse,
             NodeMsg#{ hashpath => ignore }
         ),
-    Request = hb_converge:get(<<"request">>, RawResponse, NodeMsg),
+    Request = hb_ao:get(<<"request">>, RawResponse, NodeMsg),
     ?event(payment, {post_processing_with_devices, PricingDevice, LedgerDevice}),
     case (PricingDevice =/= false) and (LedgerDevice =/= false) of
         false -> {ok, Response};
@@ -137,12 +137,12 @@ postprocess(State, RawResponse, NodeMsg) ->
             },
             ?event({post_pricing_request, PricingReq}),
             PricingRes =
-                case hb_converge:resolve(PricingMsg, PricingReq, NodeMsg) of
+                case hb_ao:resolve(PricingMsg, PricingReq, NodeMsg) of
                     {error, _Error} ->
                         % The pricing device is unable to give us a cost for
                         % the request, so we try to estimate it instead.
                         EstimateReq = PricingReq#{ <<"path">> => <<"estimate">> },
-                        hb_converge:resolve(PricingMsg, EstimateReq, NodeMsg);
+                        hb_ao:resolve(PricingMsg, EstimateReq, NodeMsg);
                     {ok, P} -> {ok, P}
                 end,
             ?event(payment, {p4_post_pricing_response, PricingRes}),
@@ -159,7 +159,7 @@ postprocess(State, RawResponse, NodeMsg) ->
                         },
                     ?event({p4_ledger_request, LedgerReq}),
                     {ok, Resp} = 
-                        hb_converge:resolve(
+                        hb_ao:resolve(
                             LedgerMsg,
                             LedgerReq,
                             NodeMsg
@@ -182,14 +182,14 @@ balance(_, Req, NodeMsg) ->
             preprocessor_not_set,
             NodeMsg
         ),
-    LedgerDevice = hb_converge:get(<<"ledger_device">>, Preprocessor, false, NodeMsg),
+    LedgerDevice = hb_ao:get(<<"ledger_device">>, Preprocessor, false, NodeMsg),
     LedgerMsg = #{ <<"device">> => LedgerDevice },
     LedgerReq = #{
         <<"path">> => <<"balance">>,
         <<"request">> => Req
     },
     ?event({ledger_message, {ledger_msg, LedgerMsg}}),
-    case hb_converge:resolve(LedgerMsg, LedgerReq, NodeMsg) of
+    case hb_ao:resolve(LedgerMsg, LedgerReq, NodeMsg) of
         {ok, Balance} ->
             {ok, Balance};
         {error, Error} ->
@@ -253,9 +253,9 @@ faff_test() ->
         <<"path">> => <<"/greeting">>,
         <<"greeting">> => <<"Hello, world!">>
     },
-    GoodSignedReq = hb_message:attest(Req, GoodWallet),
+    GoodSignedReq = hb_message:commit(Req, GoodWallet),
     ?event({req, GoodSignedReq}),
-    BadSignedReq = hb_message:attest(Req, BadWallet),
+    BadSignedReq = hb_message:commit(Req, BadWallet),
     ?event({req, BadSignedReq}),
     {ok, Res} = hb_http:get(Node, GoodSignedReq, #{}),
     ?event(payment, {res, Res}),
@@ -286,17 +286,17 @@ non_chargable_route_test() ->
     Req = #{
         <<"path">> => <<"/~p4@1.0/balance">>
     },
-    GoodSignedReq = hb_message:attest(Req, Wallet),
+    GoodSignedReq = hb_message:commit(Req, Wallet),
     Res = hb_http:get(Node, GoodSignedReq, #{}),
     ?event({res1, Res}),
     ?assertMatch({ok, 0}, Res),
     Req2 = #{ <<"path">> => <<"/~meta@1.0/info">> },
-    GoodSignedReq2 = hb_message:attest(Req2, Wallet),
+    GoodSignedReq2 = hb_message:commit(Req2, Wallet),
     Res2 = hb_http:get(Node, GoodSignedReq2, #{}),
     ?event({res2, Res2}),
     ?assertMatch({ok, #{ <<"operator">> := _ }}, Res2),
     Req3 = #{ <<"path">> => <<"/~scheduler@1.0">> },
-    BadSignedReq3 = hb_message:attest(Req3, Wallet),
+    BadSignedReq3 = hb_message:commit(Req3, Wallet),
     Res3 = hb_http:get(Node, BadSignedReq3, #{}),
     ?event({res3, Res3}),
     ?assertMatch({error, _}, Res3).

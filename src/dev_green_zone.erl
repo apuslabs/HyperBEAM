@@ -1,7 +1,7 @@
 %%% @doc The green zone device, which provides secure communication and identity
 %%% management between trusted nodes. It handles node initialization, joining
 %%% existing green zones, key exchange, and node identity cloning. All operations
-%%% are protected by hardware attestation and encryption.
+%%% are protected by hardware commitment and encryption.
 -module(dev_green_zone).
 -export([join/3, init/3, become/3, key/3]).
 -include("include/hb.hrl").
@@ -50,7 +50,7 @@ default_zone_required_opts(Opts) ->
 init(_M1, M2, Opts) ->
     ?event(green_zone, {init, start}),
 	RequiredConfig =
-        hb_converge:get(
+        hb_ao:get(
             <<"required-config">>,
             M2,
             default_zone_required_opts(Opts),
@@ -95,7 +95,7 @@ init(_M1, M2, Opts) ->
 %%
 %% Based on the presence of a peer address:
 %%   - If the target peer is specified, Node B internally routes the request to 
-%%     the join_peer flow, where it generates an attestation report and prepares
+%%     the join_peer flow, where it generates an commitment report and prepares
 %%     a POST request to forward to Node A.
 %%   - If no peer address is present, the join request is processed locally via
 %%     the validate_join flow.
@@ -110,8 +110,8 @@ init(_M1, M2, Opts) ->
         {ok, map()} | {error, binary()}.
 join(M1, M2, Opts) ->
     ?event(green_zone, {join, start}),
-	PeerLocation = hb_converge:get(<<"peer-location">>, M1, undefined, Opts),
-	PeerID = hb_converge:get(<<"peer-id">>, M1, undefined, Opts),
+	PeerLocation = hb_ao:get(<<"peer-location">>, M1, undefined, Opts),
+	PeerID = hb_ao:get(<<"peer-id">>, M1, undefined, Opts),
 	?event(green_zone, {join_peer, PeerLocation, PeerID}),
 	if (PeerLocation =:= undefined) or (PeerID =:= undefined) ->
 		validate_join(M1, M2, Opts);
@@ -183,8 +183,8 @@ key(_M1, _M2, Opts) ->
 become(_M1, M2, Opts) ->
     ?event(green_zone, {become, start}),
     % 1. Retrieve the target node's address from the incoming message.
-    NodeLocation = hb_converge:get(<<"peer-location">>, M2, Opts),
-    NodeID = hb_converge:get(<<"peer-id">>, M2, Opts),
+    NodeLocation = hb_ao:get(<<"peer-location">>, M2, Opts),
+    NodeID = hb_ao:get(<<"peer-id">>, M2, Opts),
     % 2. Check if the local node has a valid shared AES key.
     GreenZoneAES = hb_opts:get(priv_green_zone_aes, undefined, Opts),
     case GreenZoneAES of
@@ -210,8 +210,8 @@ finalize_become(KeyResp, NodeLocation, NodeID, GreenZoneAES, Opts) ->
     % 4. Decode the response to obtain the encrypted key and IV.
     Combined =
         base64:decode(
-            hb_converge:get(<<"encrypted_key">>, KeyResp, Opts)),
-    IV = base64:decode(hb_converge:get(<<"iv">>, KeyResp, Opts)),
+            hb_ao:get(<<"encrypted_key">>, KeyResp, Opts)),
+    IV = base64:decode(hb_ao:get(<<"iv">>, KeyResp, Opts)),
     % 5. Separate the ciphertext and the authentication tag.
     CipherLen = byte_size(Combined) - 16,
     <<Ciphertext:CipherLen/binary, Tag:16/binary>> = Combined,
@@ -260,7 +260,7 @@ finalize_become(KeyResp, NodeLocation, NodeID, GreenZoneAES, Opts) ->
 %% @doc Process an internal join request when a target peer is specified.
 %%
 %% In this flow (executed on Node B):
-%%   1. Node B generates an attestation report and prepares a POST request.
+%%   1. Node B generates an commitment report and prepares a POST request.
 %%   2. It then forwards the POST request to Node A's join endpoint.
 %%   3. Upon receiving a response from Node A, Node B decrypts the returned 
 %%      zone-key (an encrypted shared AES key) using its local private key, then
@@ -285,18 +285,18 @@ join_peer(PeerLocation, PeerID, _M1, M2, InitOpts) ->
 			Wallet = hb_opts:get(priv_wallet, undefined, Opts),
 			{ok, Report} = dev_snp:generate(#{}, #{}, Opts),
 			WalletPub = element(2, Wallet),
-			MergedReq = hb_converge:set(
+			MergedReq = hb_ao:set(
 				Report, 
 				<<"public-key">>,
 				base64:encode(term_to_binary(WalletPub)),
 				Opts
 			),
-			% Create an attested join request using the wallet.
-			Req = hb_message:attest(MergedReq, Wallet),
+			% Create an committed join request using the wallet.
+			Req = hb_message:commit(MergedReq, Wallet),
 			?event({join_req, Req}),
 			?event({verify_res, hb_message:verify(Req)}),
-			% Log that the attestation report is being sent to the peer.
-			?event(green_zone, {join, sending_attestation, PeerLocation, PeerID, Req}),
+			% Log that the commitment report is being sent to the peer.
+			?event(green_zone, {join, sending_commitment, PeerLocation, PeerID, Req}),
 			case hb_http:post(PeerLocation, <<"/~greenzone@1.0/join">>, Req, Opts) of
 				{ok, Resp} ->
 					% Log the response received from the peer.
@@ -316,7 +316,7 @@ join_peer(PeerLocation, PeerID, _M1, M2, InitOpts) ->
                         true ->
                             % Extract the encrypted shared AES key (zone-key) 
                             % from the response.
-                            ZoneKey = hb_converge:get(<<"zone-key">>, Resp, Opts),
+                            ZoneKey = hb_ao:get(<<"zone-key">>, Resp, Opts),
                             % Decrypt the zone key using the local node's
                             % private key.
                             {ok, AESKey} = decrypt_zone_key(ZoneKey, Opts),
@@ -359,7 +359,7 @@ join_peer(PeerLocation, PeerID, _M1, M2, InitOpts) ->
 %% a list of fields that should be included in the node message, alongside the
 %% required config of the green zone they are joining.
 maybe_set_zone_opts(PeerLocation, PeerID, Req, InitOpts) ->
-    case hb_converge:get(<<"adopt-config">>, Req, true, InitOpts) of
+    case hb_ao:get(<<"adopt-config">>, Req, true, InitOpts) of
         false ->
             % The node operator does not want to adopt the peer's config. Return
             % the initial options unchanged.
@@ -416,7 +416,7 @@ calculate_node_message(RequiredOpts, Req, true) ->
                 <<"adopt-config">>, <<"peer-location">>,
                 <<"peer-id">>, <<"path">>, <<"method">>
             ],
-            hb_message:unattested(Req)
+            hb_message:uncommitted(Req)
         ),
 	% Convert atoms to binaries in RequiredOpts to prevent binary_to_existing_atom errors
     % The required config should override the request, if necessary.
@@ -431,15 +431,15 @@ calculate_node_message(RequiredOpts, Req, BinList) when is_binary(BinList) ->
 %% @doc Validate an incoming join request.
 %%
 %% When Node A receives a POST join request from Node B, this routine is executed:
-%%   1. It extracts the attestation report, the requesting node's address, and 
+%%   1. It extracts the commitment report, the requesting node's address, and 
 %%      the encoded public key.
-%%   2. It verifies the attestation report included in the request.
+%%   2. It verifies the commitment report included in the request.
 %%   3. If the report is valid, Node A adds Node B to its list of trusted nodes.
 %%   4. Node A then encrypts the shared AES key (zone-key) with Node B's public 
 %%      key and returns it along with its public key.
 %%
 %% @param M1 Ignored parameter.
-%% @param Req The join request message containing the attestation report and 
+%% @param Req The join request message containing the commitment report and 
 %%          other join details.
 %% @param Opts A map of configuration options.
 %% @returns {ok, Map} on success with join response details, or {error, Reason}
@@ -452,22 +452,22 @@ validate_join(_M1, Req, Opts) ->
 		false -> throw(invalid_join_request)
 	end,
 	?event(green_zone, {join, start}),
-    % Retrieve the attestation report and address from the join request.
-    Report = hb_converge:get(<<"report">>, Req, Opts),
-    NodeAddr = hb_converge:get(<<"address">>, Req, Opts),
+    % Retrieve the commitment report and address from the join request.
+    Report = hb_ao:get(<<"report">>, Req, Opts),
+    NodeAddr = hb_ao:get(<<"address">>, Req, Opts),
     ?event(green_zone, {join, extract, {node_addr, NodeAddr}}),
     % Retrieve and decode the joining node's public key.
-    EncodedPubKey = hb_converge:get(<<"public-key">>, Req, Opts),
+    EncodedPubKey = hb_ao:get(<<"public-key">>, Req, Opts),
     RequesterPubKey = case EncodedPubKey of
         not_found -> not_found;
         Encoded -> binary_to_term(base64:decode(Encoded))
     end,
     ?event(green_zone, {join, public_key, ok}),
-    % Verify the attestation report provided in the join request.
+    % Verify the commitment report provided in the join request.
     case dev_snp:verify(Req, #{<<"target">> => <<"self">>}, Opts) of
         {ok, true} ->
-            % Attestation verified.
-            ?event(green_zone, {join, attestation, verified}),
+            % Commitment verified.
+            ?event(green_zone, {join, commitment, verified}),
             % Retrieve the shared AES key used for encryption.
             GreenZoneAES = hb_opts:get(priv_green_zone_aes, undefined, Opts),
             % Retrieve the local node's wallet to extract its public key.
@@ -487,12 +487,12 @@ validate_join(_M1, Req, Opts) ->
                 <<"public-key">>   => WalletPubKey
             }};
         {ok, false} ->
-            % Attestation failed.
-            ?event(green_zone, {join, attestation, failed}),
-            {error, <<"Received invalid attestation report.">>};
+            % Commitment failed.
+            ?event(green_zone, {join, commitment, failed}),
+            {error, <<"Received invalid commitment report.">>};
         Error ->
-            % Error during attestation verification.
-            ?event(green_zone, {join, attestation, error, Error}),
+            % Error during commitment verification.
+            ?event(green_zone, {join, commitment, error, Error}),
             Error
     end.
 
@@ -500,13 +500,13 @@ validate_peer_opts(Req, Opts) ->
     ?event(green_zone, {validate_peer_opts, start, Req}),
 	% Get the required config from the local node's configuration.
 	RequiredConfig =
-        hb_converge:normalize_keys(
+        hb_ao:normalize_keys(
             hb_opts:get(green_zone_required_opts, #{}, Opts)),
     ?event(green_zone, {validate_peer_opts, required_config, RequiredConfig}),
     
     PeerOpts =
-        hb_converge:normalize_keys(
-            hb_converge:get(<<"node-message">>, Req, undefined, Opts)),
+        hb_ao:normalize_keys(
+            hb_ao:get(<<"node-message">>, Req, undefined, Opts)),
     ?event(green_zone, {validate_peer_opts, peer_opts, PeerOpts}),
     
     % Add the required config itself to the required options of the peer. This
@@ -521,7 +521,7 @@ validate_peer_opts(Req, Opts) ->
     ?event(green_zone, {validate_peer_opts, is_map_peer_opts, is_map(PeerOpts)}),
     
     % Debug: Get node_history safely
-    NodeHistory = hb_converge:get(<<"node_history">>, PeerOpts, [], Opts),
+    NodeHistory = hb_ao:get(<<"node_history">>, PeerOpts, [], Opts),
     ?event(green_zone, {validate_peer_opts, node_history, NodeHistory}),
     
     % Debug: Check length of node_history
@@ -548,10 +548,10 @@ validate_peer_opts(Req, Opts) ->
     FinalResult.
 
 %% @doc Add a joining node's details to the trusted nodes list.
-%% Updates the local configuration with the new trusted node's attestation report
+%% Updates the local configuration with the new trusted node's commitment report
 %% and public key.
 %% @param NodeAddr The joining node's address.
-%% @param Report The attestation report provided by the joining node.
+%% @param Report The commitment report provided by the joining node.
 %% @param RequesterPubKey The joining node's public key.
 %% @param Opts A map of configuration options.
 %% @returns ok.

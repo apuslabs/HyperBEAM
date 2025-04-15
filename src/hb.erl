@@ -1,4 +1,4 @@
-%%% @doc Hyperbeam is a decentralized node implementing the Converge Protocol
+%%% @doc Hyperbeam is a decentralized node implementing the AO-Core protocol
 %%% on top of Arweave.
 %%% 
 %%% This protocol offers a computation layer for executing arbitrary logic on 
@@ -17,7 +17,7 @@
 %%% 	`Hyperbeam(Message1, Message2) => Message3'
 %%% 
 %%% When Hyperbeam executes a message, it will return a new message containing
-%%% the result of that execution, as well as signed attestations of its
+%%% the result of that execution, as well as signed commitments of its
 %%% correctness. If the computation that is executed is deterministic, recipients
 %%% of the new message are able to verify that the computation was performed
 %%% correctly. The new message may be stored back to Arweave if desired,
@@ -47,9 +47,9 @@
 %%%    `hb_http' handles making requests and responding with messages. `cowboy'
 %%%    is used to implement the underlying HTTP server.
 %%% 
-%%% 3. `hb_converge' implements the computation logic of the node: A mechanism
+%%% 3. `hb_ao' implements the computation logic of the node: A mechanism
 %%%    for resolving messages to other messages, via the application of logic
-%%%    implemented in `devices'. `hb_converge' also manages the loading of Erlang
+%%%    implemented in `devices'. `hb_ao' also manages the loading of Erlang
 %%%    modules for each device into the node's environment. There are many
 %%%    different default devices implemented in the hyperbeam node, using the
 %%%    namespace `dev_*'. Some of the critical components are:
@@ -88,7 +88,7 @@
 -export([topup/3, topup/4]).
 -export([start_mainnet/0, start_mainnet/1]).
 %%% Debugging tools:
--export([event/1, event/2, event/3, event/4, event/5, event/6, no_prod/3]).
+-export([no_prod/3]).
 -export([read/1, read/2, debug_wait/4, profile/1, benchmark/2, benchmark/3]).
 %%% Node wallet and address management:
 -export([address/0, wallet/0, wallet/1]).
@@ -116,10 +116,7 @@ start_mainnet(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
     Wallet = hb:wallet(hb_opts:get(priv_key_location, no_viable_wallet_path, Opts)),
     BaseOpts = hb_http_server:set_default_opts(Opts),
@@ -142,7 +139,7 @@ start_mainnet(Opts) ->
     ),
     <<"http://localhost:", (integer_to_binary(maps:get(port, Opts)))/binary>>.
 
-%%% @doc Start a server with a `simple-pay@1.0` pre-processor.
+%%% @doc Start a server with a `simple-pay@1.0' pre-processor.
 start_simple_pay() ->
     start_simple_pay(address()).
 start_simple_pay(Addr) ->
@@ -160,10 +157,7 @@ do_start_simple_pay(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
     Port = maps:get(port, Opts),
     Processor =
@@ -189,7 +183,7 @@ do_start_simple_pay(Opts) ->
 topup(Node, Amount, Recipient) ->
     topup(Node, Amount, Recipient, wallet()).
 topup(Node, Amount, Recipient, Wallet) ->
-    Message = hb_message:attest(
+    Message = hb_message:commit(
         #{
             <<"path">> => <<"/~simple-pay@1.0/topup">>,
             <<"amount">> => Amount,
@@ -218,40 +212,6 @@ address() -> address(wallet()).
 address(Wallet) when is_tuple(Wallet) ->
     hb_util:encode(ar_wallet:to_address(Wallet));
 address(Location) -> address(wallet(Location)).
-
-%% @doc Debugging event logging function. For now, it just prints to standard
-%% error.
-event(X) -> event(global, X).
-event(Topic, X) -> event(Topic, X, "").
-event(Topic, X, Mod) -> event(Topic, X, Mod, undefined).
-event(Topic, X, Mod, Func) -> event(Topic, X, Mod, Func, undefined).
-event(Topic, X, Mod, Func, Line) -> event(Topic, X, Mod, Func, Line, #{}).
-event(Topic, X, Mod, undefined, Line, Opts) -> event(Topic, X, Mod, "", Line, Opts);
-event(Topic, X, Mod, Func, undefined, Opts) -> event(Topic, X, Mod, Func, "", Opts);
-event(Topic, X, ModAtom, Func, Line, Opts) when is_atom(ModAtom) ->
-    % Check if the module has the `hb_debug' attribute set to `print'.
-    case lists:member({hb_debug, [print]}, ModAtom:module_info(attributes)) of
-        true -> hb_util:debug_print(X, atom_to_list(ModAtom), Func, Line);
-        false -> 
-            % Check if the module has the `hb_debug' attribute set to `no_print'.
-            case lists:keyfind(hb_debug, 1, ModAtom:module_info(attributes)) of
-                {hb_debug, [no_print]} -> X;
-                _ -> event(Topic, X, atom_to_list(ModAtom), Func, Line, Opts)
-            end
-    end;
-event(Topic, X, ModStr, Func, Line, Opts) ->
-    % Check if the debug_print option has the topic in it if set.
-    case hb_opts:get(debug_print, false, Opts) of
-        ModList when is_list(ModList) ->
-            case lists:member(ModStr, ModList)
-                orelse lists:member(atom_to_list(Topic), ModList)
-            of
-                true -> hb_util:debug_print(X, ModStr, Func, Line);
-                false -> X
-            end;
-        true -> hb_util:debug_print(X, ModStr, Func, Line);
-        false -> X
-    end.
 
 %% @doc Debugging function to read a message from the cache.
 %% Specify either a scope atom (local or remote) or a store tuple
@@ -306,7 +266,7 @@ debug_wait(T, Mod, Func, Line) ->
 %% @doc Run a function as many times as possible in a given amount of time.
 benchmark(Fun, TLen) ->
     T0 = erlang:system_time(millisecond),
-    until(
+    hb_util:until(
         fun() -> erlang:system_time(millisecond) - T0 > (TLen * 1000) end,
         Fun,
         0
@@ -336,15 +296,3 @@ benchmark(Fun, TLen, Procs) ->
         end,
     Refs = lists:map(StartWorker, lists:seq(1, Procs)),
     lists:sum(lists:map(CollectRes, Refs)).
-
-until(Condition, Fun, Count) ->
-    case Condition() of
-        false ->
-            case apply(Fun, hb_converge:truncate_args(Fun, [Count])) of
-                {count, AddToCount} ->
-                    until(Condition, Fun, Count + AddToCount);
-                _ ->
-                    until(Condition, Fun, Count + 1)
-            end;
-        true -> Count
-    end.

@@ -1,7 +1,7 @@
-%%% @doc A router that attaches a HTTP server to the Converge resolver.
-%%% Because Converge is built to speak in HTTP semantics, this module
+%%% @doc A router that attaches a HTTP server to the AO-Core resolver.
+%%% Because AO-Core is built to speak in HTTP semantics, this module
 %%% only has to marshal the HTTP request into a message, and then
-%%% pass it to the Converge resolver. 
+%%% pass it to the AO-Core resolver. 
 %%% 
 %%% `hb_http:reply/4' is used to respond to the client, handling the 
 %%% process of converting a message back into an HTTP response.
@@ -17,7 +17,7 @@
 
 %% @doc Starts the HTTP server. Optionally accepts an `Opts' message, which
 %% is used as the source for server configuration settings, as well as the
-%% `Opts' argument to use for all Converge resolution requests downstream.
+%% `Opts' argument to use for all AO-Core resolution requests downstream.
 start() ->
     ?event(http, {start_store, <<"cache-mainnet">>}),
     Store = hb_opts:get(store, no_store, #{}),
@@ -31,6 +31,11 @@ start() ->
                 ?event(boot, {failed_to_load_config, Loc, Reason}),
                 #{}
         end,
+    MergedConfig =
+        maps:merge(
+            hb_opts:default_message(),
+            Loaded
+        ),
     PrivWallet =
         hb:wallet(
             hb_opts:get(
@@ -39,7 +44,7 @@ start() ->
                 Loaded
             )
         ),
-    FormattedConfig = hb_util:debug_fmt(Loaded, 2),
+    FormattedConfig = hb_util:debug_fmt(MergedConfig, 2),
     io:format("~n"
         "===========================================================~n"
         "==    ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗           ==~n"
@@ -86,7 +91,8 @@ start() ->
         Loaded#{
             priv_wallet => PrivWallet,
             store => Store,
-            port => hb_opts:get(port, 8734, Loaded)
+            port => hb_opts:get(port, 8734, Loaded),
+            cache_writers => [hb_util:human_id(ar_wallet:to_address(PrivWallet))]
         }
     ).
 start(Opts) ->
@@ -98,10 +104,7 @@ start(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
     hb:init(),
     BaseOpts = set_default_opts(Opts),
@@ -128,37 +131,51 @@ new_server(RawNodeMsg) ->
     % Put server ID into node message so it's possible to update current server
     % params
     NodeMsgWithID = maps:put(http_server, ServerID, NodeMsg),
-    Dispatcher =
-        cowboy_router:compile(
-            [
-                % {HostMatch, list({PathMatch, Handler, InitialState})}
-                {'_', [
-                    {"/", cowboy_static, {priv_file, hb, "index.html"}},
-                    {
-                        "/metrics/[:registry]",
-                        prometheus_cowboy2_handler,
-                        #{}
-                    },
-                    {'_', ?MODULE, ServerID}
-                ]}
-            ]
-        ),
+    Dispatcher = cowboy_router:compile([{'_', [{'_', ?MODULE, ServerID}]}]),
     ProtoOpts = #{
         env => #{dispatch => Dispatcher, node_msg => NodeMsgWithID},
-        metrics_callback =>
-            fun prometheus_cowboy2_instrumenter:observe/1,
-        stream_handlers => [cowboy_metrics_h, cowboy_stream_h],
+        stream_handlers => [cowboy_stream_h],
         max_connections => infinity,
         idle_timeout => hb_opts:get(idle_timeout, 300000, NodeMsg)
-		% max_header_value_length => 1000000 % Testing with a larger value to see if it fixes the issue with the large header value 431 response
     },
+    PrometheusOpts =
+        case hb_opts:get(prometheus, not hb_features:test(), NodeMsg) of
+            true ->
+                ?event(prometheus, {starting_prometheus, {test_mode, hb_features:test()}}),
+                % Attempt to start the prometheus application, if possible.
+                try
+                    application:ensure_all_started([prometheus, prometheus_cowboy]),
+                    ProtoOpts#{
+                        metrics_callback =>
+                            fun prometheus_cowboy2_instrumenter:observe/1,
+                        stream_handlers => [cowboy_metrics_h, cowboy_stream_h]
+                    }
+                catch
+                    Type:Reason ->
+                        % If the prometheus application is not started, we can
+                        % still start the HTTP server, but we won't have any
+                        % metrics.
+                        ?event(prometheus,
+                            {prometheus_not_started, {type, Type}, {reason, Reason}}
+                        ),
+                        ProtoOpts
+                end;
+            false ->
+                ?event(prometheus, {prometheus_not_started, {test_mode, hb_features:test()}}),
+                ProtoOpts
+        end,
+    DefaultProto =
+        case hb_features:http3() of
+            true -> http3;
+            false -> http2
+        end,
     {ok, Port, Listener} =
-        case Protocol = hb_opts:get(protocol, no_proto, NodeMsg) of
+        case Protocol = hb_opts:get(protocol, DefaultProto, NodeMsg) of
             http3 ->
-                start_http3(ServerID, ProtoOpts, NodeMsg);
+                start_http3(ServerID, PrometheusOpts, NodeMsg);
             Pro when Pro =:= http2; Pro =:= http1 ->
-        		% The HTTP/2 server has fallback mode to 1.1 as necessary.
-                start_http2(ServerID, ProtoOpts, NodeMsg);
+                % The HTTP/2 server has fallback mode to 1.1 as necessary.
+                start_http2(ServerID, PrometheusOpts, NodeMsg);
             _ -> {error, {unknown_protocol, Protocol}}
         end,
     ?event(http,
@@ -177,6 +194,7 @@ start_http3(ServerID, ProtoOpts, _NodeMsg) ->
     Parent = self(),
     ServerPID =
         spawn(fun() ->
+            application:ensure_all_started(quicer),
             {ok, Listener} = cowboy:start_quic(
                 ServerID, 
                 TransOpts = #{
@@ -198,12 +216,23 @@ start_http3(ServerID, ProtoOpts, _NodeMsg) ->
                 []
             ),
             ranch_server:set_addr(ServerID, {<<"localhost">>, GivenPort}),
+            % Bypass ranch's requirement to have a connection supervisor defined to support updating protocol opts
+            % Quicer doesn't use a connection supervisor, so we just spawn one that does nothing
+            ConnSup = spawn(fun() -> http3_conn_sup_loop() end),
+            ranch_server:set_connections_sup(ServerID, ConnSup),
             Parent ! {ok, GivenPort},
             receive stop -> stopped end
         end),
     receive {ok, GivenPort} -> {ok, GivenPort, ServerPID}
     after 2000 ->
         {error, {timeout, staring_http3_server, ServerID}}
+    end.
+
+http3_conn_sup_loop() ->
+    receive
+        _ -> 
+            % Ignore any other messages
+            http3_conn_sup_loop()
     end.
 
 start_http2(ServerID, ProtoOpts, NodeMsg) ->
@@ -246,35 +275,47 @@ cors_reply(Req, _ServerID) ->
     ?event(http_debug, {cors_reply, {req, Req}, {req2, Req2}}),
     {ok, Req2, no_state}.
 
-%% @doc Handle all non-CORS preflight requests as Converge requests. Execution 
+%% @doc Handle all non-CORS preflight requests as AO-Core requests. Execution 
 %% starts by parsing the HTTP request into HyerBEAM's message format, then
-%% passing the message directly to `meta@1.0` which handles calling Converge in
+%% passing the message directly to `meta@1.0' which handles calling AO-Core in
 %% the appropriate way.
-handle_request(Req, Body, ServerID) ->
+handle_request(RawReq, Body, ServerID) ->
+    % Insert the start time into the request so that it can be used by the
+    % `hb_http' module to calculate the duration of the request.
+    StartTime = os:system_time(millisecond),
+    Req = RawReq#{ start_time => StartTime },
     NodeMsg = get_opts(#{ http_server => ServerID }),
-    ?event(http, {http_inbound, {cowboy_req, Req}, {body, {string, Body}}}),
-    % Parse the HTTP request into HyerBEAM's message format.
-    ReqSingleton = hb_http:req_to_tabm_singleton(Req, Body, NodeMsg),
-    AttestationCodec = hb_http:accept_to_codec(ReqSingleton, NodeMsg),
-    ?event(http, {parsed_singleton, ReqSingleton, {accept_codec, AttestationCodec}}),
-    {ok, Res} =
-        dev_meta:handle(
-            NodeMsg#{ attestation_device => AttestationCodec },
-            ReqSingleton
-        ),
-    ?event(http_short,
-        {response,
-            {status, hb_converge:get(<<"status">>, Res, no_status, NodeMsg)},
-            {method, hb_converge:get(<<"method">>, ReqSingleton, no_method, NodeMsg)},
-            {path,
-                {string,
-                    uri_string:percent_decode(
-                    hb_converge:get(<<"path">>, ReqSingleton, <<"[NO PATH]">>, NodeMsg)
-                )}
-            }
-        }
-    ),
-    hb_http:reply(Req, ReqSingleton, Res, NodeMsg).
+    case cowboy_req:path(RawReq) of
+        <<"/">> ->
+            % If the request is for the root path, serve a redirect to the default 
+            % request of the node.
+            cowboy_req:reply(
+                302,
+                #{
+                    <<"location">> =>
+                        hb_opts:get(
+                            default_req,
+                            <<"/~hyperbuddy@1.0/index">>,
+                            NodeMsg
+                        )
+                },
+                RawReq
+            );
+        _ ->
+            % The request is of normal AO-Core form, so we parse it and invoke
+            % the meta@1.0 device to handle it.
+            ?event(http, {http_inbound, {cowboy_req, Req}, {body, {string, Body}}}),
+            % Parse the HTTP request into HyerBEAM's message format.
+            ReqSingleton = hb_http:req_to_tabm_singleton(Req, Body, NodeMsg),
+            CommitmentCodec = hb_http:accept_to_codec(ReqSingleton, NodeMsg),
+            ?event(http, {parsed_singleton, ReqSingleton, {accept_codec, CommitmentCodec}}),
+            {ok, Res} =
+                dev_meta:handle(
+                    NodeMsg#{ commitment_device => CommitmentCodec },
+                    ReqSingleton
+                ),
+            hb_http:reply(Req, ReqSingleton, Res, NodeMsg)
+    end.
 
 %% @doc Return the list of allowed methods for the HTTP server.
 allowed_methods(Req, State) ->
@@ -298,8 +339,8 @@ set_default_opts(Opts) ->
     Port =
         case hb_opts:get(port, no_port, TempOpts) of
             no_port ->
-                rand:seed(exsplus, erlang:timestamp()),
-                10000 + rand:uniform(20000);
+                rand:seed(exsplus, erlang:system_time(microsecond)),
+                10000 + rand:uniform(50000);
             PassedPort -> PassedPort
         end,
     Wallet =
@@ -341,10 +382,7 @@ start_node(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
     hb:init(),
     hb_sup:start_link(Opts),

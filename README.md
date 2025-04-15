@@ -1,4 +1,4 @@
-<img src="https://arweave.net/dOpRkKrNNQ4HHebxZlPCo0BWfrjwJ-CEBQs2EPgrwbg" />
+![hyperbeam_logo-thin-3](https://github.com/user-attachments/assets/fcca891c-137e-4022-beff-360eb2a0d05e)
 
 This repository contains a reference implementation of AO-Core, along with an
 Erlang-based (BEAM) client implementing a number of devices for the protocol.
@@ -16,13 +16,13 @@ prior to execution. These state-space `links` are represented as Merklized lists
 programs inputs and initial states.
 2. A unified data structure for representing program states as HTTP documents,
 as described in the [HTTP Semantics RFC](https://www.rfc-editor.org/rfc/rfc9110.html).
-3. A unified protocol for expressing `attestations` of the `states` found at
-particular `hashpaths`. These attestations allow nodes to participate in varied
+3. A unified protocol for expressing `commitments` of the `states` found at
+particular `hashpaths`. These commitments allow nodes to participate in varied
 economic and cryptographic mechanisms to prove and challenge each-other's
 representations regarding the programs that operate inside the AO-Core protocol.
 4. A meta-VM that allows any number of different virtual machines and computational
 models (`devices`) to be executed inside the AO-Core protocol, while enabling their
-states and inputs to be calculated and attested to in a unified format.
+states and inputs to be calculated and committed to in a unified format.
 
 ## What is HyperBeam?
 
@@ -49,7 +49,7 @@ To begin using HyperBeam, you will need to install:
 - Docker (optional, for containerized deployment)
 
 You will also need:
-- A wallet and it's keyfile(generate a new wallet and keyfile with https://www.wander.app)
+- A wallet and it's keyfile *(generate a new wallet and keyfile with https://www.wander.app)*
 
 Then you can clone the HyperBEAM source and build it:
 
@@ -69,36 +69,96 @@ docker build -t hyperbeam .
 If you intend to offer TEE-based computation of AO-Core devices, please see the
 [`HyperBEAM OS`](https://github.com/permaweb/hb-os) repo for details on configuration and deployment.
 
+## Running HyperBEAM
+
+Once the code is compiled, you can start HyperBEAM with:
+
+```bash
+# Start with default configuration
+rebar3 shell
+```
+
+The default configuration uses settings from `hb_opts.erl`, which preloads 
+all devices and sets up default stores on port 10000.
+
+### Optional Build Profiles
+
+HyperBEAM supports several optional build profiles that enable additional features:
+
+- `genesis_wasm`: Enables Genesis WebAssembly support
+- `rocksdb`: Enables RocksDB storage backend (adds RocksDB v1.8.0 dependency)
+- `http3`: Enables HTTP/3 support via QUIC protocol
+
+
+Using these profiles allows you to optimize HyperBEAM for your specific use case without adding unnecessary dependencies to the base installation.
+
+To start a shell with profiles:
+
+```bash
+# Single profile
+rebar3 as rocksdb shell
+
+# Multiple profiles
+rebar3 as rocksdb,genesis_wasm shell
+```
+
+To create a release with profiles:
+
+```bash
+# Create release with profiles
+rebar3 as rocksdb,genesis_wasm release
+```
+
+Note: Profiles modify compile-time options that get baked into the release. Choose the profiles you need before starting HyperBEAM.
+
+### Verify Installation
+
+To verify that your HyperBEAM node is running correctly, check:
+
+```bash
+curl http://localhost:10000/~meta@1.0/info
+```
+
+If you receive a response with node information, your HyperBEAM
+installation is working properly.
+
 ## Configuration
 
-HyperBeam can be configured using a `~meta@1.0` device. This device is initialized
-via the command line arguments provided when the node is started.
+HyperBEAM can be configured using a `~meta@1.0` device, which is initialized
+ using either command line arguments or a configuration file.
+
+### Configuration with `config.flat`
+
+The simplest way to configure HyperBEAM is using the `config.flat` file:
+
+1. A file named `config.flat` is already included in the project directory
+2. Update to include your configuration values:
+
+```
+port: 10000
+priv_key_location: /path/to/wallet.json
+```
+
+3. Start HyperBEAM with `rebar3 shell`
+
+HyperBEAM will automatically load your configuration and display the active
+settings in the startup log.
+
+### Creating a Release
+
+For production environments, you can create a standalone release:
 
 ```bash
-rebar3 shell --eval "hb:start_mainnet(#{ [OPTS] })."
+rebar3 release
 ```
 
-For example, in order to start a node using a custom port and Arweave wallet,
-you could execute the following command:
+This creates a release in `_build/default/rel/hb` that can be deployed independently.
 
-```bash
-rebar3 shell --eval "hb:start_mainnet(#{ port => 9001, key_location => 'path/to/my/wallet.key' })."
-```
-
-Node operators can also configure the environment using a `flat@1.0` encoded settings file. An 
-example configuration is found in the `config.flat` file of this repository. The format simply specifies 
-configuration options using HTTP header styling. For example, to set the port for the node and to specify
-whether it should use caching hueristics or always consult its local data store, the `config.flat` would
-be as follows:
-
-```
-port: 1337
-cache-lookup-hueristics: true
-```
+### Runtime Configuration Changes
 
 Additionally, if you would like to modify a running node's configuration, you can
-do so by sending a HTTP Signed Message using any RFC-9421 compatible client in 
-the following form:
+ do so by sending a HTTP Signed Message using any RFC-9421 compatible client
+  in the following form:
 
 ```
 POST /~meta@1.0/info
@@ -169,7 +229,7 @@ example setup with co-executing HyperBEAM and legacy-CU nodes.
 the local node, or another node in the network, is executing inside a [Trusted Execution
 Environment (TEE)](https://en.wikipedia.org/wiki/Trusted_execution_environment).
 Nodes executing inside these environments use an ephemeral key pair, provably
-only existing inside the TEE, and can be sign attestations of AO-Core executions
+only existing inside the TEE, and can be signed commitments of AO-Core executions
 in a trust-minimized way.
 
 - `p4@1.0`: The `p4@1.0` device runs as a `pre-processor` and `post-processor` in
@@ -213,3 +273,20 @@ by [Forward Research](https://fwd.arweave.net). Pull Requests are always welcome
 
 To get started building on HyperBEAM, check out the [hacking on HyperBEAM](./docs/hacking-on-hyperbeam.md)
 guide.
+
+## Documentation
+
+HyperBEAM implementation documentation is generated into the [`doc` directory](./doc)
+using [`edoc`](https://www.erlang.org/doc/apps/edoc/chapter.html#content).
+You can regenerate the documentation by running:
+
+```sh
+rebar3 edoc
+```
+
+Then you can serve them locally by running the following command, then navigating
+to `http://localhost:8000/index.html`.
+
+```sh
+erl -s inets -eval 'inets:start(httpd,[{server_name,"HyperBEAM_Docs"},{document_root, "doc"},{server_root, "doc"},{port, 8000},{mime_types,[{"html","text/html"},{"htm","text/html"},{"js","text/javascript"},{"css","text/css"},{"gif","image/gif"},{"jpg","image/jpeg"},{"jpeg","image/jpeg"},{"png","image/png"}]}]).'
+```

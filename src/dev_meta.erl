@@ -1,47 +1,45 @@
 %%% @doc The hyperbeam meta device, which is the default entry point
 %%% for all messages processed by the machine. This device executes a
-%%% Converge singleton request, after first applying the node's 
+%%% AO-Core singleton request, after first applying the node's 
 %%% pre-processor, if set. The pre-processor can halt the request by
 %%% returning an error, or return a modified version if it deems necessary --
-%%% the result of the pre-processor is used as the request for the Converge
+%%% the result of the pre-processor is used as the request for the AO-Core
 %%% resolver. Additionally, a post-processor can be set, which is executed after
-%%% the Converge resolver has returned a result.
+%%% the AO-Core resolver has returned a result.
 -module(dev_meta).
 -export([info/1, info/3, handle/2, adopt_node_message/2]).
-%%% Helper functions for processors
--export([all_attestors/1]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 %% @doc Ensure that the helper function `adopt_node_message/2' is not exported.
 %% The naming of this method carefully avoids a clash with the exported `info/3'
 %% function. We would like the node information to be easily accessible via the
-%% `info' endpoint, but Converge also uses `info' as the name of the function
+%% `info' endpoint, but AO-Core also uses `info' as the name of the function
 %% that grants device information. The device call takes two or fewer arguments,
 %% so we are safe to use the name for both purposes in this case, as the user 
 %% info call will match the three-argument version of the function. If in the 
-%% future the `request' is added as an argument to Converge's internal `info'
+%% future the `request' is added as an argument to AO-Core's internal `info'
 %% function, we will need to find a different approach.
 info(_) -> #{ exports => [info] }.
 
 %% @doc Normalize and route messages downstream based on their path. Messages
 %% with a `Meta' key are routed to the `handle_meta/2' function, while all
-%% other messages are routed to the `handle_converge/2' function.
+%% other messages are routed to the `handle_resolve/2' function.
 handle(NodeMsg, RawRequest) ->
     ?event({singleton_tabm_request, RawRequest}),
     NormRequest = hb_singleton:from(RawRequest),
-    ?event(http, {request, hb_converge:normalize_keys(NormRequest)}),
+    ?event(http, {request, hb_ao:normalize_keys(NormRequest)}),
     case hb_opts:get(initialized, false, NodeMsg) of
         false ->
             Res =
                 embed_status(
-                    hb_converge:force_message(
+                    hb_ao:force_message(
                         handle_initialize(NormRequest, NodeMsg),
                         NodeMsg
                     )
                 ),
             Res;
-        _ -> handle_converge(RawRequest, NormRequest, NodeMsg)
+        _ -> handle_resolve(RawRequest, NormRequest, NodeMsg)
     end.
 
 handle_initialize([Base = #{ <<"device">> := Device}, Req = #{ <<"path">> := Path }|_], NodeMsg) ->
@@ -61,14 +59,14 @@ handle_initialize([], _NodeMsg) ->
 %% request is signed by the owner of the node. If not, we return the node message
 %% as-is, aside all keys that are private (according to `hb_private').
 info(_, Request, NodeMsg) ->
-    case hb_converge:get(<<"method">>, Request, NodeMsg) of
+    case hb_ao:get(<<"method">>, Request, NodeMsg) of
         <<"GET">> ->
             ?event({get_config_req, Request, NodeMsg}),
 			DynamicKeys = add_dynamic_keys(NodeMsg),	
 			?event(green_zone, {get_config, DynamicKeys}),
             embed_status({ok, filter_node_msg(DynamicKeys)});
         <<"POST">> ->
-            case hb_converge:get(<<"initialized">>, NodeMsg, not_found, NodeMsg) of
+            case hb_ao:get(<<"initialized">>, NodeMsg, not_found, NodeMsg) of
                 permanent ->
                     embed_status(
                         {error,
@@ -107,7 +105,7 @@ add_dynamic_keys(NodeMsg) ->
 %% @doc Validate that the request is signed by the operator of the node, then
 %% allow them to update the node message.
 update_node_message(Request, NodeMsg) ->
-    {ok, RequestSigners} = dev_message:attestors(Request),
+    RequestSigners = hb_message:signers(Request),
     Operator =
         hb_opts:get(
             operator,
@@ -156,7 +154,7 @@ adopt_node_message(Request, NodeMsg) ->
     MergedOpts =
         maps:merge(
             NodeMsg,
-            hb_opts:mimic_default_types(hb_message:unattested(Request), new_atoms)
+            hb_opts:mimic_default_types(hb_message:uncommitted(Request), new_atoms)
         ),
     % Ensure that the node history is updated and the http_server ID is
     % not overridden.
@@ -173,18 +171,18 @@ adopt_node_message(Request, NodeMsg) ->
             {ok, MergedOpts}
     end.
 
-%% @doc Handle a Converge request, which is a list of messages. We apply
+%% @doc Handle an AO-Core request, which is a list of messages. We apply
 %% the node's pre-processor to the request first, and then resolve the request
-%% using the node's Converge implementation if its response was `ok'.
+%% using the node's AO-Core implementation if its response was `ok'.
 %% After execution, we run the node's `postprocessor' message on the result of
 %% the request before returning the result it grants back to the user.
-handle_converge(Req, Msgs, NodeMsg) ->
+handle_resolve(Req, Msgs, NodeMsg) ->
     % Apply the pre-processor to the request.
     case resolve_processor(<<"preprocess">>, preprocessor, Req, Msgs, NodeMsg) of
         {ok, PreProcessedMsg} ->
             ?event(
                 {result_after_preprocessing,
-                    hb_converge:normalize_keys(PreProcessedMsg)}
+                    hb_ao:normalize_keys(PreProcessedMsg)}
             ),
             AfterPreprocOpts = hb_http_server:get_opts(NodeMsg),
             % Resolve the request message.
@@ -192,14 +190,28 @@ handle_converge(Req, Msgs, NodeMsg) ->
                 AfterPreprocOpts,
                 hb_opts:get(http_extra_opts, #{}, NodeMsg)
             ),
-            {ok, Res} =
-                embed_status(
-                    hb_converge:resolve_many(
+            Res =
+                try
+                    hb_ao:resolve_many(
                         PreProcessedMsg,
                         HTTPOpts#{ force_message => true }
                     )
+                catch
+                    throw:{necessary_message_not_found, MsgID} ->
+                        ID = hb_util:human_id(MsgID),
+                        {error, #{
+                            <<"status">> => 404,
+                            <<"unavilable">> => ID,
+                            <<"body">> =>
+                                <<"Message necessary to resolve request not found: ",
+                                    ID/binary>>
+                        }}
+                end,
+            {ok, StatusEmbeddedRes} =
+                embed_status(
+                    Res
                 ),
-            ?event({res, Res}),
+            ?event({res, StatusEmbeddedRes}),
             AfterResolveOpts = hb_http_server:get_opts(NodeMsg),
             % Apply the post-processor to the result.
             Output = maybe_sign(
@@ -208,7 +220,7 @@ handle_converge(Req, Msgs, NodeMsg) ->
                         <<"postprocess">>,
                         postprocessor,
                         Req,
-                        Res,
+                        StatusEmbeddedRes,
                         AfterResolveOpts
                     )
                 ),
@@ -216,16 +228,22 @@ handle_converge(Req, Msgs, NodeMsg) ->
             ),
             ?event(http, {response, Output}),
             Output;
-        Res -> embed_status(hb_converge:force_message(Res, NodeMsg))
+        Res -> embed_status(hb_ao:force_message(Res, NodeMsg))
     end.
 
-%% @doc execute a message from the node message upon the user's request.
+%% @doc Execute a message from the node message upon the user's request. The
+%% invocation of the processor provides a request of the following form:
+%% ```
+%%      /path => preprocess | postprocess
+%%      /request => the original request singleton
+%%      /body => list of messages the user wishes to process
+%% '''
 resolve_processor(PathKey, Processor, Req, Query, NodeMsg) ->
     case hb_opts:get(Processor, undefined, NodeMsg) of
         undefined -> {ok, Query};
         ProcessorMsg ->
-            ?event({resolving_processor, PathKey, ProcessorMsg}),
-            Res = hb_converge:resolve(
+            ?event(processor, {processor_resolving, PathKey, ProcessorMsg}),
+            Res = hb_ao:resolve(
                 ProcessorMsg,
                 #{
                     <<"path">> => PathKey,
@@ -234,13 +252,13 @@ resolve_processor(PathKey, Processor, Req, Query, NodeMsg) ->
                 },
                 NodeMsg#{ hashpath => ignore }
             ),
-            ?event({processor_result, {type, PathKey}, {res, Res}}),
+            ?event(processor, {processor_result, {type, PathKey}, {res, Res}}),
             Res
     end.
 
 %% @doc Wrap the result of a device call in a status.
 embed_status({ErlStatus, Res}) when is_map(Res) ->
-    case lists:member(<<"status">>, hb_message:attested(Res)) of
+    case lists:member(<<"status">>, hb_message:committed(Res)) of
         false ->
             HTTPCode = status_code({ErlStatus, Res}),
             {ok, Res#{ <<"status">> => HTTPCode }};
@@ -251,7 +269,7 @@ embed_status({ErlStatus, Res}) ->
     HTTPCode = status_code({ErlStatus, Res}),
     {ok, #{ <<"status">> => HTTPCode, <<"body">> => Res }}.
 
-%% @doc Calculate the appropriate HTTP status code for a Converge result.
+%% @doc Calculate the appropriate HTTP status code for an AO-Core result.
 %% The order of precedence is:
 %% 1. The status code from the message.
 %% 2. The HTTP representation of the status code.
@@ -271,9 +289,9 @@ status_code(unavailable) -> 503.
 message_to_status(#{ <<"body">> := Status }) when is_atom(Status) ->
     status_code(Status);
 message_to_status(Item) when is_map(Item) ->
-    % Note: We use `dev_message` directly here, such that we do not cause 
-    % additional Converge calls for every request. This is particularly important
-    % if a remote server is being used for all Converge requests by a node.
+    % Note: We use `dev_message' directly here, such that we do not cause 
+    % additional AO-Core calls for every request. This is particularly important
+    % if a remote server is being used for all AO-Core requests by a node.
     case dev_message:get(<<"status">>, Item) of
         {ok, RawStatus} when is_integer(RawStatus) -> RawStatus;
         {ok, RawStatus} when is_atom(RawStatus) -> status_code(RawStatus);
@@ -293,25 +311,11 @@ maybe_sign(Res, NodeMsg) ->
     case hb_opts:get(force_signed, false, NodeMsg) of
         true ->
             case hb_message:signers(Res) of
-                [] -> hb_message:attest(Res, NodeMsg);
+                [] -> hb_message:commit(Res, NodeMsg);
                 _ -> Res
             end;
         false -> Res
     end.
-
-%%% External helpers
-
-%% @doc Return the signers of a list of messages.
-all_attestors(Msgs) ->
-    lists:foldl(
-        fun(Msg, Acc) ->
-            Attestors =
-                hb_converge:get(<<"attestors">>, Msg, #{}, #{ hashpath => ignore }),
-            Acc ++ lists:map(fun hb_util:human_id/1, maps:values(Attestors))
-        end,
-        [],
-        Msgs
-    ).
 
 %%% Tests
 
@@ -320,7 +324,7 @@ config_test() ->
     Node = hb_http_server:start_node(#{ test_config_item => <<"test">> }),
     {ok, Res} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
     ?event({res, Res}),
-    ?assertEqual(<<"test">>, hb_converge:get(<<"test_config_item">>, Res, #{})).
+    ?assertEqual(<<"test">>, hb_ao:get(<<"test_config_item">>, Res, #{})).
 
 %% @doc Test that we can't get the node message if the requested key is private.
 priv_inaccessible_test() ->
@@ -332,8 +336,8 @@ priv_inaccessible_test() ->
     ),
     {ok, Res} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
     ?event({res, Res}),
-    ?assertEqual(<<"test">>, hb_converge:get(<<"test_config_item">>, Res, #{})),
-    ?assertEqual(not_found, hb_converge:get(<<"priv_key">>, Res, #{})).
+    ?assertEqual(<<"test">>, hb_ao:get(<<"test_config_item">>, Res, #{})),
+    ?assertEqual(not_found, hb_ao:get(<<"priv_key">>, Res, #{})).
 
 %% @doc Test that we can't set the node message if the request is not signed by
 %% the owner of the node.
@@ -342,7 +346,7 @@ unauthorized_set_node_msg_fails_test() ->
     {error, _} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"evil_config_item">> => <<"BAD">>
@@ -352,8 +356,8 @@ unauthorized_set_node_msg_fails_test() ->
             #{}
         ),
     {ok, Res} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
-    ?assertEqual(not_found, hb_converge:get(<<"evil_config_item">>, Res, #{})),
-    ?assertEqual(0, length(hb_converge:get(<<"node_history">>, Res, [], #{}))).
+    ?assertEqual(not_found, hb_ao:get(<<"evil_config_item">>, Res, #{})),
+    ?assertEqual(0, length(hb_ao:get(<<"node_history">>, Res, [], #{}))).
 
 %% @doc Test that we can set the node message if the request is signed by the
 %% owner of the node.
@@ -368,7 +372,7 @@ authorized_set_node_msg_succeeds_test() ->
     {ok, SetRes} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"test_config_item">> => <<"test2">>
@@ -380,8 +384,8 @@ authorized_set_node_msg_succeeds_test() ->
     ?event({res, SetRes}),
     {ok, Res} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
     ?event({res, Res}),
-    ?assertEqual(<<"test2">>, hb_converge:get(<<"test_config_item">>, Res, #{})),
-    ?assertEqual(1, length(hb_converge:get(<<"node_history">>, Res, [], #{}))).
+    ?assertEqual(<<"test2">>, hb_ao:get(<<"test_config_item">>, Res, #{})),
+    ?assertEqual(1, length(hb_ao:get(<<"node_history">>, Res, [], #{}))).
 
 %% @doc Test that an uninitialized node will not run computation.
 uninitialized_node_test() ->
@@ -403,7 +407,7 @@ permanent_node_message_test() ->
     {ok, SetRes1} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"test_config_item">> => <<"test2">>,
@@ -416,11 +420,11 @@ permanent_node_message_test() ->
     ?event({set_res, SetRes1}),
     {ok, Res} = hb_http:get(Node, #{ <<"path">> => <<"/~meta@1.0/info">> }, #{}),
     ?event({get_res, Res}),
-    ?assertEqual(<<"test2">>, hb_converge:get(<<"test_config_item">>, Res, #{})),
+    ?assertEqual(<<"test2">>, hb_ao:get(<<"test_config_item">>, Res, #{})),
     {error, SetRes2} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"test_config_item">> => <<"bad_value">>
@@ -432,8 +436,8 @@ permanent_node_message_test() ->
     ?event({set_res, SetRes2}),
     {ok, Res2} = hb_http:get(Node, #{ <<"path">> => <<"/~meta@1.0/info">> }, #{}),
     ?event({get_res, Res2}),
-    ?assertEqual(<<"test2">>, hb_converge:get(<<"test_config_item">>, Res2, #{})),
-    ?assertEqual(1, length(hb_converge:get(<<"node_history">>, Res2, [], #{}))).
+    ?assertEqual(<<"test2">>, hb_ao:get(<<"test_config_item">>, Res2, #{})),
+    ?assertEqual(1, length(hb_ao:get(<<"node_history">>, Res2, [], #{}))).
 
 %% @doc Test that we can claim the node correctly and set the node message after.
 claim_node_test() ->
@@ -448,7 +452,7 @@ claim_node_test() ->
     {ok, SetRes} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"operator">> => hb_util:human_id(Address)
@@ -460,11 +464,11 @@ claim_node_test() ->
     ?event({res, SetRes}),
     {ok, Res} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
     ?event({res, Res}),
-    ?assertEqual(hb_util:human_id(Address), hb_converge:get(<<"operator">>, Res, #{})),
+    ?assertEqual(hb_util:human_id(Address), hb_ao:get(<<"operator">>, Res, #{})),
     {ok, SetRes2} =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~meta@1.0/info">>,
                     <<"test_config_item">> => <<"test2">>
@@ -476,10 +480,10 @@ claim_node_test() ->
     ?event({res, SetRes2}),
     {ok, Res2} = hb_http:get(Node, <<"/~meta@1.0/info">>, #{}),
     ?event({res, Res2}),
-    ?assertEqual(<<"test2">>, hb_converge:get(<<"test_config_item">>, Res2, #{})),
-    ?assertEqual(2, length(hb_converge:get(<<"node_history">>, Res2, [], #{}))).
+    ?assertEqual(<<"test2">>, hb_ao:get(<<"test_config_item">>, Res2, #{})),
+    ?assertEqual(2, length(hb_ao:get(<<"node_history">>, Res2, [], #{}))).
 
-%% @doc Test that we can use a preprocessor upon a request.
+%% Test that we can use a preprocessor upon a request.
 % preprocessor_test() ->
 %     Parent = self(),
 %     Node = hb_http_server:start_node(
@@ -532,7 +536,7 @@ modify_request_test() ->
     {ok, Res} = hb_http:get(Node, <<"/added">>, #{}),
     ?assertEqual(<<"value">>, Res).
 
-%% @doc Test that we can use a postprocessor upon a request. Calls the `test@1.0'
+%% Test that we can use a postprocessor upon a request. Calls the `test@1.0'
 %% device's postprocessor, which sets the `postprocessor-called' key to true in
 %% the HTTP server.
 % postprocessor_test() ->

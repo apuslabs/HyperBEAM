@@ -16,7 +16,7 @@ snapshot(Msg1, _Msg2, _Opts) -> {ok, Msg1}.
 %% them to the state.
 compute(Msg1, Msg2, Opts) ->
     % Find the input keys.
-    PatchFrom = hb_converge:get_first(
+    PatchFrom = hb_ao:get_first(
         [
             {Msg2, <<"patch-from">>},
             {Msg1, <<"patch-from">>}
@@ -24,7 +24,7 @@ compute(Msg1, Msg2, Opts) ->
         <<"/results/outbox">>,
         Opts
     ),
-    PatchTo = hb_converge:get_first(
+    PatchTo = hb_ao:get_first(
         [
             {Msg2, <<"patch-to">>},
             {Msg1, <<"patch-to">>}
@@ -35,23 +35,28 @@ compute(Msg1, Msg2, Opts) ->
     ?event({patch_from, PatchFrom}),
     ?event({patch_to, PatchTo}),
     % Get the outbox from the message.
-    Outbox = hb_converge:get(PatchFrom, Msg1, #{}, Opts),
+    Outbox = hb_ao:get(PatchFrom, Msg1, #{}, Opts),
     % Find all messages with the PATCH request.
     Patches =
         maps:filter(
             fun(_, Msg) ->
-                hb_converge:get(<<"method">>, Msg, Opts) == <<"PATCH">>
+                (hb_ao:get(<<"method">>, Msg, Opts) == <<"PATCH">>) orelse
+                    (hb_ao:get(<<"device">>, Msg, Opts) == <<"patch@1.0">>)
             end,
             Outbox
         ),
     OutboxWithoutPatches = maps:without(maps:keys(Patches), Outbox),
+    % Remove the outbox from the message.
+    Msg1WithoutOutbox = hb_ao:set(Msg1, PatchFrom, should_never_happen, Opts),
+    % Set the new outbox.
+    Msg1WithNewOutbox = hb_ao:set(Msg1WithoutOutbox, PatchFrom, OutboxWithoutPatches, Opts),
     % Find the state to apply the patches to.
     % Apply the patches to the state.
     PatchedSubmessage =
         maps:fold(
             fun(_, Patch, MsgN) ->
                 ?event({patching, {patch, Patch}, {before, MsgN}}),
-                Res = hb_converge:set(
+                Res = hb_ao:set(
                     MsgN,
                     maps:without([<<"method">>], Patch),
                     Opts
@@ -60,28 +65,19 @@ compute(Msg1, Msg2, Opts) ->
                 Res
             end,
             case PatchTo of
-                not_found -> Msg1;
-                PatchTo -> hb_converge:get(PatchTo, Msg1, Opts)
+                not_found -> Msg1WithNewOutbox;
+                PatchTo -> hb_ao:get(PatchTo, Msg1WithNewOutbox, Opts)
             end,
             Patches
         ),
     PatchedState =
         case PatchTo of
             <<"/">> -> PatchedSubmessage;
-            _ -> hb_converge:set(Msg1, PatchTo, PatchedSubmessage, Opts)
+            _ -> hb_ao:set(Msg1WithNewOutbox, PatchTo, PatchedSubmessage, Opts)
         end,
     % Return the patched message and the source, less the patches.
-    Res = {
-        ok,
-        hb_converge:set(
-            PatchedState,
-            PatchFrom,
-            OutboxWithoutPatches,
-            Opts
-        )
-    },
-    ?event({patch_result, Res}),
-    Res.
+    ?event({patch_result, PatchedState}),
+    {ok, PatchedState}.
 
 %%% Tests
 
@@ -110,7 +106,7 @@ uninitialized_patch_test() ->
         <<"patch-from">> => <<"/results/outbox">>
     },
     {ok, ResolvedState} =
-        hb_converge:resolve(
+        hb_ao:resolve(
             InitState,
             <<"compute">>,
             #{}
@@ -118,11 +114,11 @@ uninitialized_patch_test() ->
     ?event({resolved_state, ResolvedState}),
     ?assertEqual(
         100,
-        hb_converge:get(<<"prices/apple">>, ResolvedState, #{})
+        hb_ao:get(<<"prices/apple">>, ResolvedState, #{})
     ),
     ?assertMatch(
         not_found,
-        hb_converge:get(<<"results/outbox/1">>, ResolvedState, #{})
+        hb_ao:get(<<"results/outbox/1">>, ResolvedState, #{})
     ).
 
 patch_to_submessage_test() ->
@@ -131,7 +127,7 @@ patch_to_submessage_test() ->
         <<"results">> => #{
             <<"outbox">> => #{
                 <<"1">> =>
-                    hb_message:attest(#{
+                    hb_message:commit(#{
                         <<"method">> => <<"PATCH">>,
                         <<"prices">> => #{
                             <<"apple">> => 100,
@@ -152,7 +148,7 @@ patch_to_submessage_test() ->
         <<"patch-from">> => <<"/results/outbox">>
     },
     {ok, ResolvedState} =
-        hb_converge:resolve(
+        hb_ao:resolve(
             InitState,
             <<"compute">>,
             #{}
@@ -160,5 +156,5 @@ patch_to_submessage_test() ->
     ?event({resolved_state, ResolvedState}),
     ?assertEqual(
         100,
-        hb_converge:get(<<"state/prices/apple">>, ResolvedState, #{})
+        hb_ao:get(<<"state/prices/apple">>, ResolvedState, #{})
     ).

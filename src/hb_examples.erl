@@ -34,7 +34,7 @@ relay_with_payments_test() ->
         ),
     % Create a message for the client to relay.
     ClientMessage1 =
-        hb_message:attest(
+        hb_message:commit(
             #{<<"path">> => <<"/~relay@1.0/call?relay-path=https://www.google.com">>},
             ClientWallet
         ),
@@ -44,7 +44,7 @@ relay_with_payments_test() ->
     % Topup the client's balance.
     % Note: The fields must be in the headers, for now.
     TopupMessage =
-        hb_message:attest(
+        hb_message:commit(
             #{
                 <<"path">> => <<"/~simple-pay@1.0/topup">>,
                 <<"recipient">> => ClientAddress,
@@ -88,12 +88,12 @@ paid_wasm_test() ->
     % Read the WASM file from disk, post it to the host and execute it.
     {ok, WASMFile} = file:read_file(<<"test/test-64.wasm">>),
     ClientMessage1 =
-        hb_message:attest(
+        hb_message:commit(
             #{
                 <<"path">> =>
-                    <<"/~wasm-64@1.0/init/compute/results?wasm-function=fac">>,
+                    <<"/~wasm-64@1.0/init/compute/results?function=fac">>,
                 <<"body">> => WASMFile,
-                <<"wasm-params+list">> => <<"3.0">>
+                <<"parameters+list">> => <<"3.0">>
             },
             ClientWallet
         ),
@@ -102,10 +102,10 @@ paid_wasm_test() ->
     ?assert(length(hb_message:signers(Res)) > 0),
     ?assert(hb_message:verify(Res)),
     % Now we have the results, we can verify them.
-    ?assertMatch(6.0, hb_converge:get(<<"output/1">>, Res, #{})),
+    ?assertMatch(6.0, hb_ao:get(<<"output/1">>, Res, #{})),
     % Check that the client's balance has been deducted.
     ClientMessage2 =
-        hb_message:attest(
+        hb_message:commit(
             #{<<"path">> => <<"/~simple-pay@1.0/balance">>},
             ClientWallet
         ),
@@ -146,7 +146,7 @@ create_schedule_aos2_test_disabled() ->
                 <<"http://localhost:8734">>
         end,
     ProcMsg = #{
-        <<"Data-Protocol">> => <<"ao">>,
+        <<"data-protocol">> => <<"ao">>,
         <<"type">> => <<"Process">>,
         <<"variant">> => <<"ao.TN.1">>,
         <<"type">> => <<"Process">>,
@@ -158,7 +158,7 @@ create_schedule_aos2_test_disabled() ->
         <<"scheduler-location">> => hb_util:human_id(hb:address())
     },
     Wallet = hb:wallet(),
-    SignedProc = hb_message:attest(ProcMsg, Wallet),
+    SignedProc = hb_message:commit(ProcMsg, Wallet),
     IDNone = hb_message:id(SignedProc, none),
     IDAll = hb_message:id(SignedProc, all),
     {ok, Res} = schedule(SignedProc, IDNone, Wallet, Node),
@@ -170,7 +170,7 @@ create_schedule_aos2_test_disabled() ->
         <<"/~scheduler@1.0/slot?target=", IDNone/binary>>,
         #{}
     ),
-    ?assertMatch(Slot when Slot >= 0, hb_converge:get(<<"at-slot">>, Res2, #{})).
+    ?assertMatch(Slot when Slot >= 0, hb_ao:get(<<"at-slot">>, Res2, #{})).
 
 schedule(ProcMsg, Target) ->
     schedule(ProcMsg, Target, hb:wallet()).
@@ -178,7 +178,7 @@ schedule(ProcMsg, Target, Wallet) ->
     schedule(ProcMsg, Target, Wallet, <<"http://localhost:8734">>).
 schedule(ProcMsg, Target, Wallet, Node) ->
     SignedReq = 
-        hb_message:attest(
+        hb_message:commit(
             #{
                 <<"path">> => <<"/~scheduler@1.0/schedule">>,
                 <<"target">> => Target,

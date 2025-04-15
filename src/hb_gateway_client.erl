@@ -7,9 +7,9 @@
 %%% GraphQL API. When gateways integrate serving in `httpsig@1.0' form, this
 %%% module will be deprecated.
 -module(hb_gateway_client).
-%% @doc Raw access primitives:
+%% Raw access primitives:
 -export([read/2, data/2, result_to_message/2]).
-%% @doc Application-specific data access functions:
+%% Application-specific data access functions:
 -export([scheduler_location/2]).
 -include_lib("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -51,7 +51,7 @@ read(ID, Opts) ->
     case query(Query, Opts) of
         {error, Reason} -> {error, Reason};
         {ok, GqlMsg} ->
-            case hb_converge:get(<<"data/transactions/edges/1/node">>, GqlMsg, Opts) of
+            case hb_ao:get(<<"data/transactions/edges/1/node">>, GqlMsg, Opts) of
                 not_found -> {error, not_found};
                 Item = #{<<"id">> := ID} -> result_to_message(ID, Item, Opts)
             end
@@ -75,8 +75,8 @@ item_spec() ->
 %% @doc Get the data associated with a transaction by its ID, using the node's
 %% Arweave `gateway' peers. The item is expected to be available in its 
 %% unmodified (by caches or other proxies) form at the following location:
-%%      https://<gateway>/raw/<id>
-%% where `<id>' is the base64-url-encoded transaction ID.
+%%      https://&lt;gateway&gt;/raw/&lt;id&gt;
+%% where `&lt;id&gt;' is the base64-url-encoded transaction ID.
 data(ID, Opts) ->
     Req = #{
         <<"multirequest-accept-status">> => 200,
@@ -90,10 +90,10 @@ data(ID, Opts) ->
                 {data,
                     {id, ID},
                     {response, Res},
-                    {body, hb_converge:get(<<"body">>, Res, <<>>, Opts)}
+                    {body, hb_ao:get(<<"body">>, Res, <<>>, Opts)}
                 }
             ),
-            {ok, hb_converge:get(<<"body">>, Res, <<>>, Opts)};
+            {ok, hb_ao:get(<<"body">>, Res, <<>>, Opts)};
         Res ->
             ?event(gateway, {request_error, {id, ID}, {response, Res}}),
             {error, no_viable_gateway}
@@ -119,7 +119,7 @@ scheduler_location(Address, Opts) ->
     case query(Query, Opts) of
         {error, Reason} -> {error, Reason};
         {ok, GqlMsg} ->
-            case hb_converge:get(<<"data/transactions/edges/1/node">>, GqlMsg, Opts) of
+            case hb_ao:get(<<"data/transactions/edges/1/node">>, GqlMsg, Opts) of
                 not_found -> {error, not_found};
                 Item = #{ <<"id">> := ID } -> result_to_message(ID, Item, Opts)
             end
@@ -139,25 +139,24 @@ query(Query, Opts) ->
             <<"method">> => <<"POST">>,
             <<"path">> => <<"/graphql">>,
             <<"content-type">> => <<"application/json">>,
-            <<"body">> => jiffy:encode(Query)
+            <<"body">> => hb_json:encode(Query)
         },
         Opts
     ),
     case Res of
         {ok, Msg} ->
             {ok,
-                jiffy:decode(
-                    hb_converge:get(<<"body">>, Msg, <<>>, Opts),
-                    [return_maps]
+                hb_json:decode(
+                    hb_ao:get(<<"body">>, Msg, <<>>, Opts)
                 )
             };
         {error, Reason} -> {error, Reason}
     end.
 
 %% @doc Takes a GraphQL item node, matches it with the appropriate data from a
-%% gateway, then returns `{ok, ParsedMsg}`.
+%% gateway, then returns `{ok, ParsedMsg}'.
 result_to_message(Item, Opts) ->
-    case hb_converge:get(<<"id">>, Item, Opts) of
+    case hb_ao:get(<<"id">>, Item, Opts) of
         ExpectedID when is_binary(ExpectedID) ->
             result_to_message(ExpectedID, Item, Opts);
         _ ->
@@ -167,7 +166,7 @@ result_to_message(ExpectedID, Item, Opts) ->
     GQLOpts = Opts#{ hashpath => ignore },
     % We have the headers, so we can get the data.
     Data =
-        case hb_converge:get(<<"data">>, Item, GQLOpts) of
+        case hb_ao:get(<<"data">>, Item, GQLOpts) of
             BinData when is_binary(BinData) -> BinData;
             _ ->
                 {ok, Bytes} = data(ExpectedID, Opts),
@@ -176,17 +175,17 @@ result_to_message(ExpectedID, Item, Opts) ->
     DataSize = byte_size(Data),
     ?event(gateway, {data, {id, ExpectedID}, {data, Data}, {item, Item}}, Opts),
     % Convert the response to an ANS-104 message.
-    Tags = hb_converge:get(<<"tags">>, Item, GQLOpts),
+    Tags = hb_ao:get(<<"tags">>, Item, GQLOpts),
     TX =
         #tx {
             format = ans104,
             id = hb_util:decode(ExpectedID),
-            last_tx = normalize_null(hb_converge:get(<<"anchor">>, Item, GQLOpts)),
+            last_tx = normalize_null(hb_ao:get(<<"anchor">>, Item, GQLOpts)),
             signature =
-                hb_util:decode(hb_converge:get(<<"signature">>, Item, GQLOpts)),
+                hb_util:decode(hb_ao:get(<<"signature">>, Item, GQLOpts)),
             target =
                 decode_or_null(
-                    hb_converge:get_first(
+                    hb_ao:get_first(
                         [
                             {Item, <<"recipient">>},
                             {Item, <<"target">>}
@@ -195,7 +194,7 @@ result_to_message(ExpectedID, Item, Opts) ->
                     )
                 ),
             owner =
-                hb_util:decode(hb_converge:get(<<"owner/key">>,
+                hb_util:decode(hb_ao:get(<<"owner/key">>,
                     Item, GQLOpts)),
             tags =
                 [
@@ -212,10 +211,10 @@ result_to_message(ExpectedID, Item, Opts) ->
     ?event({decoded_tabm, TABM}),
     Structured = dev_codec_structured:to(TABM),
     % Some graphql nodes do not grant the `anchor' or `last_tx' fields, so we
-    % verify the data item and optionally add the explicit keys as attested
+    % verify the data item and optionally add the explicit keys as committed
     % fields _if_ the node desires it.
     Embedded =
-        case ar_bundles:verify_item(TX) of
+        case try ar_bundles:verify_item(TX) catch _:_ -> false end of
             true ->
                 ?event({gql_verify_succeeded, Structured}),
                 Structured;
@@ -228,22 +227,22 @@ result_to_message(ExpectedID, Item, Opts) ->
                         Structured;
                     true ->
                         % The node trusts the GraphQL API, so we add the explicit
-                        % keys as attested fields.
+                        % keys as committed fields.
                         ?event(warning, {gql_verify_failed, adding_trusted_fields, {tags, Tags}}),
-                        Atts = maps:get(<<"attestations">>, Structured),
-                        AttName = hd(maps:keys(Atts)),
-                        Att = maps:get(AttName, Atts),
+                        Comms = maps:get(<<"commitments">>, Structured),
+                        AttName = hd(maps:keys(Comms)),
+                        Comm = maps:get(AttName, Comms),
                         Structured#{
-                            <<"attestations">> => #{
+                            <<"commitments">> => #{
                                 AttName =>
-                                    Att#{
+                                    Comm#{
                                         <<"trusted-keys">> =>
-                                            hb_converge:normalize_keys([
-                                                    hb_converge:normalize_key(Name)
+                                            hb_ao:normalize_keys([
+                                                    hb_ao:normalize_key(Name)
                                                 ||
                                                     #{ <<"name">> := Name } <-
                                                         maps:values(
-                                                            hb_converge:normalize_keys(Tags)
+                                                            hb_ao:normalize_keys(Tags)
                                                         )
                                                 ]
                                             )
@@ -255,6 +254,7 @@ result_to_message(ExpectedID, Item, Opts) ->
     {ok, Embedded}.
 
 normalize_null(null) -> <<>>;
+normalize_null(not_found) -> <<>>;
 normalize_null(Bin) when is_binary(Bin) -> Bin.
 
 decode_id_or_null(Bin) when byte_size(Bin) > 0 ->
@@ -282,7 +282,7 @@ scheduler_location_test() ->
     _Node = hb_http_server:start_node(#{}),
     {ok, Res} = scheduler_location(<<"fcoN_xJeisVsPXA-trzVAuIiqO3ydLQxM-L4XbrQKzY">>, #{}),
     ?event(gateway, {get_scheduler_location_test, Res}),
-    ?assertEqual(<<"Scheduler-Location">>, hb_converge:get(<<"Type">>, Res, #{})),
-    ?event(gateway, {scheduler_location, {explicit, hb_converge:get(<<"url">>, Res, #{})}}),
+    ?assertEqual(<<"Scheduler-Location">>, hb_ao:get(<<"Type">>, Res, #{})),
+    ?event(gateway, {scheduler_location, {explicit, hb_ao:get(<<"url">>, Res, #{})}}),
     % Will need updating when Legacynet terminates.
-    ?assertEqual(<<"https://su-router.ao-testnet.xyz">>, hb_converge:get(<<"url">>, Res, #{})).
+    ?assertEqual(<<"https://su-router.ao-testnet.xyz">>, hb_ao:get(<<"url">>, Res, #{})).
