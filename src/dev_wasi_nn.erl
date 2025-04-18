@@ -4,7 +4,7 @@
 -export([init/3]).
 -export([load/3, load_by_name/3, load_by_name_with_config/3]).
 -export([init_execution_context/3, set_input/3, get_output/3]).
--export([run_inference/3]).
+-export([run_inference/3,run_inference_http/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -144,6 +144,66 @@ run_inference(M1,M2,Opts)->
 	{ok, Ptr} = hb_beamr_io:write_string(Instance, Output),
 	{ok, #{ <<"state">> => State, <<"results">> => [Ptr] }}.
 
+run_inference_http(_, Request, NodeMsg) ->
+	Prompt = hb_converge:get(<<"prompt">>, Request, NodeMsg),
+	?event({inference_prompt, Prompt}),
+	Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"lib_main">>, []),
+	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+	{ok, StateRes} = hb_converge:resolve(Init, <<"compute">>, #{}),
+	[Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+	{ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+	?event({wasm_output, Output}),
+	embed_status({ok, Output}).
+
+embed_status({ErlStatus, Res}) when is_map(Res) ->
+    case lists:member(<<"status">>, hb_message:committed(Res)) of
+        false ->
+            HTTPCode = status_code({ErlStatus, Res}),
+            {ok, Res#{ <<"status">> => HTTPCode }};
+        true ->
+            {ok, Res}
+    end;
+embed_status({ErlStatus, Res}) ->
+    HTTPCode = status_code({ErlStatus, Res}),
+    {ok, #{ <<"status">> => HTTPCode, <<"body">> => Res }}.
+
+status_code({ErlStatus, Msg}) ->
+    case message_to_status(Msg) of
+        default -> status_code(ErlStatus);
+        RawStatus -> RawStatus
+    end;
+status_code(ok) -> 200;
+status_code(error) -> 400;
+status_code(created) -> 201;
+status_code(not_found) -> 404;
+status_code(unavailable) -> 503.
+
+message_to_status(#{ <<"body">> := Status }) when is_atom(Status) ->
+    status_code(Status);
+message_to_status(Item) when is_map(Item) ->
+    % Note: We use `dev_message' directly here, such that we do not cause 
+    % additional AO-Core calls for every request. This is particularly important
+    % if a remote server is being used for all AO-Core requests by a node.
+    case dev_message:get(<<"status">>, Item) of
+        {ok, RawStatus} when is_integer(RawStatus) -> RawStatus;
+        {ok, RawStatus} when is_atom(RawStatus) -> status_code(RawStatus);
+        {ok, RawStatus} -> binary_to_integer(RawStatus);
+        _ -> default
+    end;
+message_to_status(Item) when is_atom(Item) ->
+    status_code(Item);
+message_to_status(_Item) ->
+    default.
+
+filter_node_msg(Msg) when is_map(Msg) ->
+    maps:map(fun(_, Value) -> filter_node_msg(Value) end, hb_private:reset(Msg));
+filter_node_msg(Msg) when is_list(Msg) ->
+    lists:map(fun filter_node_msg/1, Msg);
+filter_node_msg(Tuple) when is_tuple(Tuple) ->
+    <<"Unencodable value.">>;
+filter_node_msg(Other) ->
+    Other.
+
 wasi_nn_exec_test() ->
 	Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"lib_main">>, []),
 	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
@@ -153,9 +213,34 @@ wasi_nn_exec_test() ->
 	?event({wasm_output, Output}),
 	?assertNotEqual(<<"">>, Output).
 
-%%% Test Helpers
-% gen_test_env() ->
-%     <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
+aos_wasi_nn_exec_test() ->
+	Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
+	Msg = gen_test_aos_msg("return 1 + 1"),
+	Env = gen_test_env(),
+	Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
+	{ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
+	?assertNotEqual(0, Ptr1),
+	hb_beamr_io:write(Instance, Ptr1, Msg),
+	{ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
+	?assertNotEqual(0, Ptr2),
+	hb_beamr_io:write(Instance, Ptr2, Env),
+	% Read the strings to validate they are correctly passed
+	{ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
+	{ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
+	?assertEqual(Env, EnvBin),
+	?assertEqual(Msg, MsgBin),
+	Ready = Init#{ <<"wasm-params">> => [Ptr1, Ptr2] },
+	{ok, StateRes} = hb_converge:resolve(Ready, <<"compute">>, #{}),
+	[Ptr] = hb_converge:get(<<"results/wasm/output">>, StateRes),
+	{ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
+	?event({got_output, Output}),
+	#{ <<"response">> := #{ <<"Output">> := #{ <<"data">> := Data }} }
+		= jiffy:decode(Output, [return_maps]),
+	?assertEqual(<<"2">>, Data).
 
-% gen_test_aos_msg(Command) ->
-%     <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"", (list_to_binary(Command))/binary, "\"}\0">>.
+%%% Test Helpers
+gen_test_env() ->
+    <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
+
+gen_test_aos_msg(Command) ->
+    <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"", (list_to_binary(Command))/binary, "\"}\0">>.
