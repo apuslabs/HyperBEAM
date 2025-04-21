@@ -11,7 +11,7 @@ resolve(_, Key) -> Key.
 
 list(StoreOpts, Key) ->
     case read(StoreOpts, Key) of
-        {error, _} -> not_found;
+        not_found -> not_found;
         {ok, Message} -> {ok, maps:keys(Message)}
     end.
 
@@ -23,10 +23,10 @@ type(StoreOpts, Key) ->
     case read(StoreOpts, Key) of
         not_found -> not_found;
         {ok, Data} ->
-            ?event({type, hb_private:reset(hb_message:unattested(Data))}),
+            ?event({type, hb_private:reset(hb_message:uncommitted(Data))}),
             IsFlat = lists:all(
                 fun({_, Value}) -> not is_map(Value) end,
-                maps:to_list(hb_private:reset(hb_message:unattested(Data)))
+                maps:to_list(hb_private:reset(hb_message:uncommitted(Data)))
             ),
             if
                 IsFlat -> simple;
@@ -52,8 +52,8 @@ read(StoreOpts, Key) ->
             not_found
     end.
 
-%% @doc Cache the data if the cache is enabled. The `store` option may either
-%% be `false` to disable local caching, or a store definition to use as the
+%% @doc Cache the data if the cache is enabled. The `store' option may either
+%% be `false' to disable local caching, or a store definition to use as the
 %% cache.
 maybe_cache(StoreOpts, Data) ->
     ?event({maybe_cache, StoreOpts, Data}),
@@ -66,7 +66,6 @@ maybe_cache(StoreOpts, Data) ->
         FoundStore -> 
             FoundStore
     end,
-    
     case Store of
         false -> do_nothing;
         Store ->
@@ -74,7 +73,7 @@ maybe_cache(StoreOpts, Data) ->
             case hb_cache:write(Data, #{ store => Store}) of
                 {ok, _} -> Data;
                 {error, Err} ->
-                    ?event(warning, {error_writing_to_local_gteway_cache, Err}),
+                    ?event(warning, {error_writing_to_local_gateway_cache, Err}),
                     Data
             end
     end.
@@ -82,17 +81,19 @@ maybe_cache(StoreOpts, Data) ->
 %%% Tests
 
 %% @doc Store is accessible via the default options.
-graphql_as_store_test() ->
-    hb_http_server:start_node(#{}),
-    ?assertMatch(
-        {ok, #{ <<"type">> := <<"Assignment">> }},
-        hb_store:read(
-            [#{ <<"store-module">> => hb_store_gateway, <<"opts">> => #{} }],
-            <<"0Tb9mULcx8MjYVgXleWMVvqo1_jaw_P6AO_CJMTj0XE">>
-        )
-    ).
+graphql_as_store_test_() ->
+	{timeout, 10, fun() ->
+		hb_http_server:start_node(#{}),
+		?assertMatch(
+			{ok, #{ <<"type">> := <<"Assignment">> }},
+			hb_store:read(
+				[#{ <<"store-module">> => hb_store_gateway, <<"opts">> => #{} }],
+				<<"0Tb9mULcx8MjYVgXleWMVvqo1_jaw_P6AO_CJMTj0XE">>
+			)
+		)
+	end}.
 
-%% @doc Stored messages are accessible via `hb_cache` accesses.
+%% @doc Stored messages are accessible via `hb_cache' accesses.
 graphql_from_cache_test() ->
     hb_http_server:start_node(#{}),
     Opts = #{ store => [#{ <<"store-module">> => hb_store_gateway, <<"opts">> => #{} }] },
@@ -197,11 +198,20 @@ external_http_access_test() ->
 resolve_on_gateway_test_() ->
     {timeout, 10, fun() ->
         TestProc = <<"p45HPD-ENkLS7Ykqrx6p_DYGbmeHDeeF8LJ09N2K53g">>,
+        EmptyStore = #{
+            <<"store-module">> => hb_store_fs,
+            <<"prefix">> => <<"cache-TEST">>
+        },
+        hb_store:reset(EmptyStore),
         hb_http_server:start_node(#{}),
         Opts = #{
             store =>
                 [
-                    #{ <<"store-module">> => hb_store_gateway, <<"store">> => false }
+                    #{
+                        <<"store-module">> => hb_store_gateway,
+                        <<"store">> => false
+                    },
+                    EmptyStore
                 ],
             cache_control => <<"cache">>
         },
@@ -213,12 +223,12 @@ resolve_on_gateway_test_() ->
         % only an explicit key.
         ?assertMatch(
             {ok, <<"Process">>},
-            hb_converge:resolve(TestProc, <<"type">>, Opts)
+            hb_ao:resolve(TestProc, <<"type">>, Opts)
         ),
-        % Next, we resolve the schedule key on the message, as a `process@1.0`
+        % Next, we resolve the schedule key on the message, as a `process@1.0'
         % message.
         {ok, X} =
-            hb_converge:resolve(
+            hb_ao:resolve(
                 {as, <<"process@1.0">>, TestProc},
                 <<"schedule">>,
                 Opts

@@ -41,6 +41,7 @@
 %% HTTP Structured Field is encoded into it's equivalent TABM encoding.
 from(Bin) when is_binary(Bin) -> Bin;
 from(HTTP) ->
+    % Decode the keys of the HTTP message
     Body = maps:get(<<"body">>, HTTP, <<>>),
     % First, parse all headers excluding the signature-related headers, as they
     % are handled separately.
@@ -50,15 +51,22 @@ from(HTTP) ->
     ContentType = maps:get(<<"content-type">>, Headers, undefined),
     % Next, we need to potentially parse the body and add to the TABM
     % potentially as sub-TABMs.
+    WithBodyKeys = from_body(Headers, InlinedKey, ContentType, Body),
+    % Decode the `ao-ids' key into a map. `ao-ids' is an encoding of literal
+    % binaries whose keys (given that they are IDs) cannot be distributed as
+    % HTTP headers.
+    WithIDs = ungroup_ids(WithBodyKeys),
+    % Remove the signature-related headers, such that they can be reconstructed
+    % from the commitments.
     MsgWithoutSigs = maps:without(
-        [<<"signature">>, <<"signature-input">>, <<"attestations">>],
-        from_body(Headers, InlinedKey, ContentType, Body)
+        [<<"signature">>, <<"signature-input">>, <<"commitments">>],
+        WithIDs
     ),
     ?event({from_body, {headers, Headers}, {body, Body}, {msgwithoutatts, MsgWithoutSigs}}),
-    % Extract all hashpaths from the attestations of the message
+    % Extract all hashpaths from the commitments of the message
     HPs = extract_hashpaths(HTTP),
     % Finally, we need to add the signatures to the TABM
-    {ok, MsgWithSigs} = attestations_from_signature(
+    {ok, MsgWithSigs} = commitments_from_signature(
         maps:without(maps:keys(HPs), MsgWithoutSigs),
         HPs,
         maps:get(<<"signature">>, Headers, not_found),
@@ -201,12 +209,12 @@ from_body_parts(TABM, InlinedKey, [Part | Rest]) ->
             from_body_parts(TABMNext, InlinedKey, Rest)
     end.
 
-%% @doc Populate the `/attestations' key on the TABM with the dictionary of 
+%% @doc Populate the `/commitments' key on the TABM with the dictionary of 
 %% signatures and their corresponding inputs.
-attestations_from_signature(Map, _HPs, not_found, _RawSigInput) ->
+commitments_from_signature(Map, _HPs, not_found, _RawSigInput) ->
     ?event({no_sigs_found_in_from, {msg, Map}}),
-    {ok, maps:without([<<"attestations">>], Map)};
-attestations_from_signature(Map, HPs, RawSig, RawSigInput) ->
+    {ok, maps:without([<<"commitments">>], Map)};
+commitments_from_signature(Map, HPs, RawSig, RawSigInput) ->
     SfSigsKV = hb_structured_fields:parse_dictionary(RawSig),
     SfInputs = maps:from_list(hb_structured_fields:parse_dictionary(RawSigInput)),
     ?event({adding_sigs_and_inputs, {sigs, SfSigsKV}, {inputs, SfInputs}}),
@@ -214,18 +222,18 @@ attestations_from_signature(Map, HPs, RawSig, RawSigInput) ->
     % with its corresponding Inputs.
     % 
     % Inputs are merged as fields on the Signature Map
-    Attestations = maps:from_list(lists:map(
+    Commitments = maps:from_list(lists:map(
         fun ({SigName, Signature}) ->
-            ?event({adding_attestation, {sig, SigName}, {sig, Signature}, {inputs, SfInputs}}),
+            ?event({adding_commitment, {sig, SigName}, {sig, Signature}, {inputs, SfInputs}}),
             {list, SigInputs, ParamsKVList} = maps:get(SigName, SfInputs, #{}),
             ?event({inputs, {signame, SigName}, {inputs, SigInputs}, {params, ParamsKVList}}),
             % Find all hashpaths from the signature and add them to the 
-            % attestations message.
+            % commitments message.
             Hashpath =
                 lists:filtermap(
                     fun ({item, BareItem, _}) ->
                         case hb_structured_fields:from_bare_item(BareItem) of
-                            HP = <<"hash", _/binary>> -> {true, HP};
+                            HP = <<"hashpath", _/binary>> -> {true, HP};
                             _ -> false
                         end;
                     (_) -> false
@@ -242,9 +250,15 @@ attestations_from_signature(Map, HPs, RawSig, RawSigInput) ->
             ?event({hashpaths, Hashpaths}),
             Params = maps:from_list(ParamsKVList),
             {string, EncPubKey} = maps:get(<<"keyid">>, Params),
+            {string, Alg} = maps:get(<<"alg">>, Params),
             PubKey = hb_util:decode(EncPubKey),
             Address = hb_util:human_id(ar_wallet:to_address(PubKey)),
-            ?event({calculated_name, {address, Address}, {sig, Signature}, {inputs, {explicit, SfInputs}, {implicit, Params}}}),
+            ?event({calculated_name,
+                {address, Address},
+                {sig, Signature},
+                {inputs, {explicit, SfInputs},
+                {implicit, Params}}
+            }),
             SerializedSig = iolist_to_binary(
                 hb_structured_fields:dictionary(
                     #{ SigName => Signature }
@@ -252,28 +266,29 @@ attestations_from_signature(Map, HPs, RawSig, RawSigInput) ->
             ),
             {item, {binary, UnencodedSig}, _} = Signature,
             {
-                Address,
+                hb_util:human_id(crypto:hash(sha256, UnencodedSig)),
                 Hashpaths#{
+                    <<"commitment-device">> => <<"httpsig@1.0">>,
+                    <<"committer">> => Address,
+                    <<"alg">> => Alg,
                     <<"signature">> => SerializedSig,
                     <<"signature-input">> =>
                         iolist_to_binary(
                             hb_structured_fields:dictionary(
                                 #{ SigName => maps:get(SigName, SfInputs) }
                             )
-                        ),
-                    <<"id">> => hb_util:human_id(crypto:hash(sha256, UnencodedSig)),
-                    <<"attestation-device">> => <<"httpsig@1.0">>
+                        )
                 }
             }
         end,
         SfSigsKV
     )),
-    % Place the attestations as a top-level message on the parent message
-    ?event({adding_attestations, {msg, Map}, {attestations, Attestations}}),
-    Msg = Map#{ <<"attestations">> => Attestations },
+    % Place the commitments as a top-level message on the parent message
+    ?event({adding_commitments, {msg, Map}, {commitments, Commitments}}),
+    Msg = Map#{ <<"commitments">> => Commitments },
     % Reset the HMAC on the message if none is present
-    case maps:get(<<"hmac-sha256">>, Attestations, not_found) of
-        not_found ->
+    case hb_message:commitment(#{ <<"alg">> => <<"hmac-sha256">> }, Msg) of
+        X when (X == not_found) or (X == multiple_matches) ->
             ?event({resetting_hmac, {msg, Msg}}),
             dev_codec_httpsig:reset_hmac(Msg);
         _ ->
@@ -286,23 +301,26 @@ attestations_from_signature(Map, HPs, RawSig, RawSigInput) ->
 to(Bin) when is_binary(Bin) -> Bin;
 to(TABM) -> to(TABM, []).
 to(TABM, Opts) when is_map(TABM) ->
+    % Group the IDs into a dictionary, so that they can be distributed as
+    % HTTP headers. If we did not do this, ID keys would be lower-cased and
+    % their comparability against the original keys would be lost.
+    WithGroupedIDs = group_ids(TABM),
     Stripped =
         maps:without(
             [
-                <<"attestations">>,
+                <<"commitments">>,
                 <<"signature">>,
                 <<"signature-input">>,
                 <<"priv">>
             ],
-            TABM
+            WithGroupedIDs
         ),
     ?event({stripped, Stripped}),
     {InlineFieldHdrs, InlineKey} = inline_key(TABM),
     Intermediate = do_to(Stripped, Opts ++ [{inline, InlineFieldHdrs, InlineKey}]),
     % Finally, add the signatures to the HTTP message
-    case maps:get(<<"attestations">>, TABM, not_found) of
-        #{ <<"hmac-sha256">> :=
-                #{ <<"signature">> := Sig, <<"signature-input">> := SigInput } } ->
+    case hb_message:commitment(#{ <<"alg">> => <<"hmac-sha256">> }, TABM) of
+        {ok, _, #{ <<"signature">> := Sig, <<"signature-input">> := SigInput }} ->
             HPs = hashpaths_from_message(TABM),
             EncWithHPs = maps:merge(Intermediate, HPs),
             % Add the original signature encodings to the HTTP message
@@ -374,9 +392,9 @@ do_to(TABM, Opts) when is_map(TABM) ->
                 PartList = hb_util:to_sorted_list(
                     maps:map(
                         fun(Key, M = #{ <<"body">> := _ }) when map_size(M) =:= 1 ->
-                            % If the map has only one key, and it is `body`,
+                            % If the map has only one key, and it is `body',
                             % then we must encode part name with the additional
-                            % `/body` suffix. This is because otherwise, the `body`
+                            % `/body' suffix. This is because otherwise, the `body'
                             % element will be assumed to be an inline part, removing
                             % the necessary hierarchy.
                             encode_body_part(
@@ -436,6 +454,51 @@ do_to(TABM, Opts) when is_map(TABM) ->
     ?event({final_body_map, {msg, Enc2}}),
     Enc2.
 
+%% @doc Group all elements with:
+%% 1. A key that ?IS_ID returns true for, and
+%% 2. A value that is immediate
+%% into a combined SF dict-_like_ structure. If not encoded, these keys would 
+%% be sent as headers and lower-cased, losing their comparability against the
+%% original keys. The structure follows all SF dict rules, except that it allows
+%% for keys to contain capitals. The HyperBEAM SF parser will accept these keys,
+%% but standard RFC 8741 parsers will not. Subsequently, the resulting `ao-cased'
+%% key is not added to the `ao-types' map.
+group_ids(Map) ->
+    % Find all keys that are IDs
+    IDDict = maps:filter(fun(K, V) -> ?IS_ID(K) andalso is_binary(V) end, Map),
+    % Convert the dictionary into a list of key-value pairs
+    IDDictStruct =
+        lists:map(
+            fun({K, V}) ->
+                {K, {item, {string, V}, []}}
+            end,
+            maps:to_list(IDDict)
+        ),
+    % Convert the list of key-value pairs into a binary
+    IDBin = iolist_to_binary(hb_structured_fields:dictionary(IDDictStruct)),
+    % Remove the encoded keys from the map
+    Stripped = maps:without(maps:keys(IDDict), Map),
+    % Add the ID binary to the map if it is not empty
+    case map_size(IDDict) of
+        0 -> Stripped;
+        _ -> Stripped#{ <<"ao-ids">> => IDBin }
+    end.
+
+%% @doc Decode the `ao-ids' key into a map.
+ungroup_ids(Msg = #{ <<"ao-ids">> := IDBin }) ->
+    % Extract the ID binary from the Map
+    EncodedIDsMap = hb_structured_fields:parse_dictionary(IDBin),
+    % Convert the value back into a raw binary
+    IDsMap =
+        lists:map(
+            fun({K, {item, {string, Bin}, _}}) -> {K, Bin} end,
+            EncodedIDsMap
+        ),
+    % Add the decoded IDs to the Map and remove the `ao-ids' key
+    maps:merge(maps:without([<<"ao-ids">>], Msg), maps:from_list(IDsMap));
+ungroup_ids(Msg) -> Msg.
+
+%% @doc Encode a list of body parts into a binary.
 encode_body_keys(PartList) when is_list(PartList) ->
     iolist_to_binary(hb_structured_fields:list(lists:map(
         fun
@@ -453,7 +516,7 @@ group_maps(Map, Parent, Top) when is_map(Map) ->
     {Flattened, NewTop} = maps:fold(
         fun(Key, Value, {CurMap, CurTop}) ->
             ?event({group_maps, {key, Key}, {value, Value}}),
-            NormKey = hb_converge:normalize_key(Key),
+            NormKey = hb_ao:normalize_key(Key),
             FlatK =
                 case Parent of
                     <<>> -> NormKey;
@@ -513,17 +576,17 @@ boundary_from_parts(PartList) ->
     RawBoundary = crypto:hash(sha256, BodyBin),
     hb_util:encode(RawBoundary).
 
-%% Extract all hashpaths from the attestations of a given message
+%% Extract all hashpaths from the commitments of a given message
 hashpaths_from_message(Msg) ->
     maps:fold(
-        fun (_, Att, Acc) ->
-            maps:merge(Acc, extract_hashpaths(Att))
+        fun (_, Comm, Acc) ->
+            maps:merge(Acc, extract_hashpaths(Comm))
         end,
         #{},
-        maps:get(<<"attestations">>, Msg, #{})
+        maps:get(<<"commitments">>, Msg, #{})
     ).
 
-%% @doc Extract all keys labelled `hashpath*' from the attestations, and add them
+%% @doc Extract all keys labelled `hashpath*' from the commitments, and add them
 %% to the HTTP message as `hashpath*' keys.
 extract_hashpaths(Map) ->
     maps:filter(
@@ -626,11 +689,11 @@ encode_http_msg(Httpsig) ->
 %% @doc All maps are encoded into the body of the HTTP message
 %% to be further encoded later.
 field_to_http(Httpsig, {Name, Value}, _Opts) when is_map(Value) ->
-    NormalizedName = hb_converge:normalize_key(Name),
+    NormalizedName = hb_ao:normalize_key(Name),
     OldBody = maps:get(<<"body">>, Httpsig, #{}),
     Httpsig#{ <<"body">> => OldBody#{ NormalizedName => Value } };
 field_to_http(Httpsig, {Name, Value}, Opts) when is_binary(Value) ->
-    NormalizedName = hb_converge:normalize_key(Name),
+    NormalizedName = hb_ao:normalize_key(Name),
     % The default location where the value is encoded within the HTTP
     % message depends on its size.
     % 

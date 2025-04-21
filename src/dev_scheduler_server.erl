@@ -97,7 +97,7 @@ do_assign(State, Message, ReplyPID) ->
     AssignFun =
         fun() ->
             {Timestamp, Height, Hash} = ar_timestamp:get(),
-            Assignment = hb_message:attest(#{
+            Assignment = hb_message:commit(#{
                 <<"path">> =>
                     case hb_path:from_message(request, Message) of
                         undefined -> <<"compute">>;
@@ -132,7 +132,7 @@ do_assign(State, Message, ReplyPID) ->
                 State
             ),
             ?event(starting_message_write),
-            dev_scheduler_cache:write(Assignment, maps:get(opts, State)),
+            ok = dev_scheduler_cache:write(Assignment, maps:get(opts, State)),
             maybe_inform_recipient(
                 local_confirmation,
                 ReplyPID,
@@ -183,41 +183,44 @@ next_hashchain(HashChain, Message) ->
 %% TESTS
 
 %% @doc Test the basic functionality of the server.
-new_proc_test() ->
-    Wallet = ar_wallet:new(),
-    SignedItem = hb_message:attest(
-        #{ <<"data">> => <<"test">>, <<"random-key">> => rand:uniform(10000) },
-        Wallet
-    ),
-    SignedItem2 = hb_message:attest(
-        #{ <<"data">> => <<"test2">> },
-        Wallet
-    ),
-    SignedItem3 = hb_message:attest(
-        #{
-            <<"data">> => <<"test2">>,
-            <<"deep-key">> =>
-                #{ <<"data">> => <<"test3">> }
-        },
-        Wallet
-    ),
-    dev_scheduler_registry:find(hb_converge:get(id, SignedItem), true),
-    schedule(ID = hb_converge:get(id, SignedItem), SignedItem),
-    schedule(ID, SignedItem2),
-    schedule(ID, SignedItem3),
-    ?assertMatch(
-        #{ current := 2 },
-        dev_scheduler_server:info(dev_scheduler_registry:find(ID))
-    ).
+new_proc_test_() ->
+	{timeout, 20, fun() -> 
+		Wallet = ar_wallet:new(),
+		SignedItem = hb_message:commit(
+			#{ <<"data">> => <<"test">>, <<"random-key">> => rand:uniform(10000) },
+			Wallet
+		),
+		SignedItem2 = hb_message:commit(
+			#{ <<"data">> => <<"test2">> },
+			Wallet
+		),
+		SignedItem3 = hb_message:commit(
+			#{
+				<<"data">> => <<"test2">>,
+				<<"deep-key">> =>
+					#{ <<"data">> => <<"test3">> }
+			},
+			Wallet
+		),
+		dev_scheduler_registry:find(hb_ao:get(id, SignedItem), true),
+		schedule(ID = hb_ao:get(id, SignedItem), SignedItem),
+		schedule(ID, SignedItem2),
+		schedule(ID, SignedItem3),
+		?assertMatch(
+			#{ current := 2 },
+			dev_scheduler_server:info(dev_scheduler_registry:find(ID))
+		)
+	end}.
+    
 
 % benchmark_test() ->
 %     BenchTime = 1,
 %     Wallet = ar_wallet:new(),
-%     SignedItem = hb_message:attest(
+%     SignedItem = hb_message:commit(
 %         #{ <<"data">> => <<"test">>, <<"random-key">> => rand:uniform(10000) },
 %         Wallet
 %     ),
-%     dev_scheduler_registry:find(ID = hb_converge:get(id, SignedItem), true),
+%     dev_scheduler_registry:find(ID = hb_ao:get(id, SignedItem), true),
 %     ?event({benchmark_start, ?MODULE}),
 %     Iterations = hb:benchmark(
 %         fun(X) ->

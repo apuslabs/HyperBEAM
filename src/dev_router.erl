@@ -15,14 +15,14 @@
 %%% `hb_http' module to manage control of requests.
 %%% 
 %%% The structure of the routes should be as follows:
-%%% ```
+%%% <pre>
 %%%     Node?: The node to route the message to.
 %%%     Nodes?: A list of nodes to route the message to.
 %%%     Strategy?: The load distribution strategy to use.
 %%%     Choose?: The number of nodes to choose from the list.
 %%%     Template?: A message template to match the message against, either as a
 %%%                map or a path regex.
-%%% '''
+%%% </pre>
 -module(dev_router).
 %%% Device API:
 -export([routes/3, route/2, route/3]).
@@ -34,13 +34,13 @@
 %% @doc Device function that returns all known routes.
 routes(M1, M2, Opts) ->
     ?event({routes_msg, M1, M2}),
-    Routes = hb_opts:get(routes, [], Opts),
+    Routes = load_routes(Opts),
     ?event({routes, Routes}),
-    case hb_converge:get(<<"method">>, M2, Opts) of
+    case hb_ao:get(<<"method">>, M2, Opts) of
         <<"POST">> ->
             Owner = hb_opts:get(operator, undefined, Opts),
             RouteOwners = hb_opts:get(route_owners, [Owner], Opts),
-            {ok, Signers} = dev_message:attestors(M2),
+            Signers = hb_message:signers(M2),
             IsTrusted =
                 lists:any(
                     fun(Signer) -> lists:member(Signer, Signers) end,
@@ -48,14 +48,14 @@ routes(M1, M2, Opts) ->
                 ),
             case IsTrusted of
                 true ->
-                    % Minimize the work performed by converge to make the sort
+                    % Minimize the work performed by AO-Core to make the sort
                     % more efficient.
                     SortOpts = Opts#{ hashpath => ignore },
                     NewRoutes =
                         lists:sort(
                             fun(X, Y) ->
-                                hb_converge:get(<<"priority">>, X, SortOpts)
-                                    < hb_converge:get(<<"priority">>, Y, SortOpts)
+                                hb_ao:get(<<"priority">>, X, SortOpts)
+                                    < hb_ao:get(<<"priority">>, Y, SortOpts)
                             end,
                             [M2|Routes]
                         ),
@@ -69,75 +69,144 @@ routes(M1, M2, Opts) ->
 
 %% @doc Find the appropriate route for the given message. If we are able to 
 %% resolve to a single host+path, we return that directly. Otherwise, we return
-%% the matching route (including a list of nodes under ``) from the list of routes.
+%% the matching route (including a list of nodes under `nodes') from the list of
+%% routes.
 %% 
 %% If we have a route that has multiple resolving nodes, check
 %% the load distribution strategy and choose a node. Supported strategies:
-%% ```
-%%       All:     Return all nodes (default).
-%%       Random:  Distribute load evenly across all nodes, non-deterministically.
+%% <pre>
+%%           All: Return all nodes (default).
+%%        Random: Distribute load evenly across all nodes, non-deterministically.
 %%       By-Base: According to the base message's hashpath.
+%%     By-Weight: According to the node's `weight' key.
 %%       Nearest: According to the distance of the node's wallet address to the
 %%                base message's hashpath.
-%% '''
+%% </pre>
 %% `By-Base' will ensure that all traffic for the same hashpath is routed to the
 %% same node, minimizing work duplication, while `Random' ensures a more even
 %% distribution of the requests.
 %% 
-%% Can operate as a `Router/1.0' device, which will ignore the base message,
+%% Can operate as a `~router@1.0' device, which will ignore the base message,
 %% routing based on the Opts and request message provided, or as a standalone
 %% function, taking only the request message and the `Opts' map.
 route(Msg, Opts) -> route(undefined, Msg, Opts).
 route(_, Msg, Opts) ->
-    Routes = hb_opts:get(routes, [], Opts),
+    Routes = load_routes(Opts),
     R = match_routes(Msg, Routes, Opts),
     ?event({find_route, {msg, Msg}, {routes, Routes}, {res, R}}),
-    case (R =/= no_matches) andalso hb_converge:get(<<"node">>, R, Opts) of
+    case (R =/= no_matches) andalso hb_ao:get(<<"node">>, R, Opts) of
         false -> {error, no_matches};
         Node when is_binary(Node) -> {ok, Node};
         Node when is_map(Node) -> apply_route(Msg, Node);
         not_found ->
             ModR = apply_routes(Msg, R, Opts),
-            case hb_converge:get(<<"strategy">>, R, Opts) of
+            case hb_ao:get(<<"strategy">>, R, Opts) of
                 not_found -> {ok, ModR};
                 <<"All">> -> {ok, ModR};
                 Strategy ->
-                    ChooseN = hb_converge:get(<<"choose">>, R, 1, Opts),
-                    Hashpath = hb_path:from_message(hashpath, R),
-                    Nodes = hb_converge:get(<<"nodes">>, ModR, Opts),
-                    Chosen = choose(ChooseN, Strategy, Hashpath, Nodes, Opts),
+                    ChooseN = hb_ao:get(<<"choose">>, R, 1, Opts),
+                    % Get the first element of the path -- the `base' message
+                    % of the request.
+                    Base = extract_base(Msg, Opts),
+                    Nodes = hb_ao:get(<<"nodes">>, ModR, Opts),
+                    Chosen = choose(ChooseN, Strategy, Base, Nodes, Opts),
+                    ?event({choose,
+                        {strategy, Strategy},
+                        {choose_n, ChooseN},
+                        {base, Base},
+                        {nodes, Nodes},
+                        {chosen, Chosen}
+                    }),
                     case Chosen of
-                        [X] when is_map(X) ->
-                            {ok, hb_converge:get(<<"host">>, X, Opts)};
-                        [X] -> {ok, X};
-                        _ ->
-                            {ok, hb_converge:set(<<"nodes">>, Chosen, Opts)}
+                        [Node] when is_map(Node) ->
+                            apply_route(Msg, Node);
+                        [NodeURI] -> {ok, NodeURI};
+                        ChosenNodes ->
+                            {ok,
+                                hb_ao:set(
+                                    <<"nodes">>,
+                                    maps:map(
+                                        fun(Node) ->
+                                            hb_util:ok(apply_route(Msg, Node))
+                                        end,
+                                        Chosen
+                                    ),
+                                    Opts
+                                )
+                            }
                     end
             end
     end.
 
-%% @doc Generate a `uri` key for each node in a route.
+%% @doc Find the target path to route for a request message.
+find_target_path(Msg, Opts) ->
+    case hb_ao:get(<<"route-path">>, Msg, not_found, Opts) of
+        not_found ->
+            ?event({find_target_path, {msg, Msg}, {opts, Opts}, not_found}),
+            hb_path:from_message(request, Msg);
+        RoutePath -> RoutePath
+    end.
+
+%% @doc Load the current routes for the node. Allows either explicit routes from
+%% the node message's `routes' key, or dynamic routes generated by resolving the
+%% `route_provider' message.
+load_routes(Opts) ->
+    case hb_opts:get(route_provider, not_found, Opts) of
+        not_found -> hb_opts:get(routes, [], Opts);
+        RoutesProvider ->
+            ProviderMsgs = hb_singleton:from(RoutesProvider),
+            ?event({route_provider, ProviderMsgs}),
+            case hb_ao:resolve_many(ProviderMsgs, Opts) of
+                {ok, Routes} -> Routes;
+                {error, Error} -> throw({routes, routes_provider_failed, Error})
+            end
+    end.
+
+%% @doc Extract the base message ID from a request message. Produces a single
+%% binary ID that can be used for routing decisions.
+extract_base(#{ <<"path">> := Path }, Opts) ->
+    extract_base(Path, Opts);
+extract_base(RawPath, Opts) when is_binary(RawPath) ->
+    BasePath = hb_path:hd(#{ <<"path">> => RawPath }, Opts),
+    case ?IS_ID(BasePath) of
+        true -> BasePath;
+        false ->
+            case binary:split(BasePath, [<<"~">>, <<"?">>, <<"&">>], [global]) of
+                [BaseMsgID|_] when ?IS_ID(BaseMsgID) -> BaseMsgID;
+                _ -> hb_crypto:sha256(BasePath)
+            end
+    end.
+
+%% @doc Generate a `uri' key for each node in a route.
 apply_routes(Msg, R, Opts) ->
-    Nodes = hb_converge:get(<<"nodes">>, R, Opts),
+    Nodes = hb_ao:get(<<"nodes">>, R, Opts),
     NodesWithRouteApplied =
-        if is_list(Nodes) ->
-            lists:map(
-                fun(N) -> N#{ <<"uri">> => hb_util:ok(apply_route(Msg, N)) } end,
-                Nodes
-            );
-        is_map(Nodes) ->
-            maps:map(
-                fun(_, N) -> N#{ <<"uri">> => hb_util:ok(apply_route(Msg, N)) } end,
-                Nodes
-            )
-        end,
+        lists:map(
+            fun(N) ->
+                ?event({apply_route, {msg, Msg}, {node, N}}),
+                case apply_route(Msg, N) of
+                    {ok, URI} when is_binary(URI) -> N#{ <<"uri">> => URI };
+                    {ok, Map} -> Map;
+                    {error, _} -> N
+                end
+            end,
+            hb_util:message_to_ordered_list(Nodes)
+        ),
     R#{ <<"nodes">> => NodesWithRouteApplied }.
 
 %% @doc Apply a node map's rules for transforming the path of the message.
 %% Supports the following keys:
+%% - `opts': A map of options to pass to the request.
 %% - `prefix': The prefix to add to the path.
 %% - `suffix': The suffix to add to the path.
 %% - `replace': A regex to replace in the path.
+apply_route(Msg, Route = #{ <<"opts">> := Opts }) ->
+    {ok, #{
+        <<"opts">> => Opts,
+        <<"uri">> => hb_util:ok(apply_route(Msg, maps:without([<<"opts">>], Route)))
+    }};
+apply_route(#{ <<"route-path">> := Path }, R) ->
+    apply_route(#{ <<"path">> => Path }, R);
 apply_route(#{ <<"path">> := Path }, #{ <<"prefix">> := Prefix }) ->
     {ok, <<Prefix/binary, Path/binary>>};
 apply_route(#{ <<"path">> := Path }, #{ <<"suffix">> := Suffix }) ->
@@ -155,7 +224,7 @@ match_routes(ToMatch, Routes, Opts) ->
     match_routes(
         ToMatch,
         Routes,
-        hb_converge:keys(hb_converge:normalize_keys(Routes)),
+        hb_ao:keys(hb_ao:normalize_keys(Routes)),
         Opts
     ).
 match_routes(#{ <<"path">> := Explicit = <<"http://", _/binary>> }, _, _, _) ->
@@ -165,24 +234,24 @@ match_routes(#{ <<"path">> := Explicit = <<"https://", _/binary>> }, _, _, _) ->
     #{ <<"node">> => Explicit };
 match_routes(_, _, [], _) -> no_matches;
 match_routes(ToMatch, Routes, [XKey|Keys], Opts) ->
-    XM = hb_converge:get(XKey, Routes, Opts),
+    XM = hb_ao:get(XKey, Routes, Opts),
     Template =
-        hb_converge:get(
+        hb_ao:get(
             <<"template">>,
             XM,
             #{},
             Opts#{ hashpath => ignore }
         ),
-    case template_matches(ToMatch, Template) of
+    case template_matches(ToMatch, Template, Opts) of
         true -> XM;
         false -> match_routes(ToMatch, Routes, Keys, Opts)
     end.
 
 %% @doc Check if a message matches a message template or path regex.
-template_matches(ToMatch, Template) when is_map(Template) ->
+template_matches(ToMatch, Template, _Opts) when is_map(Template) ->
     hb_message:match(Template, ToMatch, primary);
-template_matches(ToMatch, Regex) when is_binary(Regex) ->
-    MsgPath = (hb_path:from_message(request, ToMatch)),
+template_matches(ToMatch, Regex, Opts) when is_binary(Regex) ->
+    MsgPath = find_target_path(ToMatch, Opts),
     hb_path:regex_matches(MsgPath, Regex).
 
 %% @doc Implements the load distribution strategies if given a cluster.
@@ -190,6 +259,19 @@ choose(0, _, _, _, _) -> [];
 choose(N, <<"Random">>, _, Nodes, _Opts) ->
     Node = lists:nth(rand:uniform(length(Nodes)), Nodes),
     [Node | choose(N - 1, <<"Random">>, nop, lists:delete(Node, Nodes), _Opts)];
+choose(N, <<"By-Weight">>, _, Nodes, Opts) ->
+    NodesWithWeight =
+        [
+            { Node, hb_util:int(hb_ao:get(<<"weight">>, Node, Opts)) }
+        ||
+            Node <- Nodes
+        ],
+    Node = hb_util:weighted_random(NodesWithWeight),
+    [
+        Node
+    |
+        choose(N - 1, <<"By-Weight">>, nop, lists:delete(Node, Nodes), Opts)
+    ];
 choose(N, <<"By-Base">>, Hashpath, Nodes, Opts) when is_binary(Hashpath) ->
     choose(N, <<"By-Base">>, binary_to_bignum(Hashpath), Nodes, Opts);
 choose(N, <<"By-Base">>, HashInt, Nodes, Opts) ->
@@ -210,7 +292,7 @@ choose(N, <<"Nearest">>, HashPath, Nodes, Opts) ->
     NodesWithDistances =
         lists:map(
             fun(Node) ->
-                Wallet = hb_converge:get(<<"Wallet">>, Node, Opts),
+                Wallet = hb_ao:get(<<"wallet">>, Node, Opts),
                 DistanceScore =
                     field_distance(
                         hb_util:native_id(Wallet),
@@ -261,6 +343,94 @@ binary_to_bignum(Bin) when ?IS_ID(Bin) ->
     Num.
 
 %%% Tests
+
+route_provider_test() ->
+    Node = hb_http_server:start_node(#{
+        route_provider => #{
+            <<"path">> => <<"/test-key/routes">>,
+            <<"test-key">> => #{
+                <<"routes">> => [
+                    #{
+                        <<"template">> => <<"*">>,
+                        <<"node">> => <<"testnode">>
+                    }
+                ]
+            }
+        }
+    }),
+    ?assertEqual(
+        {ok, <<"testnode">>},
+        hb_http:get(Node, <<"/~router@1.0/routes/1/node">>, #{})
+    ).
+
+dynamic_route_provider_test() ->
+    {ok, Script} = file:read_file("test/test.lua"),
+    Node = hb_http_server:start_node(#{
+        route_provider => #{
+            <<"device">> => <<"lua@5.3a">>,
+            <<"path">> => <<"route_provider">>,
+            <<"script">> => Script,
+            <<"node">> => <<"test-dynamic-node">>
+        },
+        priv_wallet => ar_wallet:new()
+    }),
+    ?assertEqual(
+        {ok, <<"test-dynamic-node">>},
+        hb_http:get(Node, <<"/~router@1.0/routes/1/node">>, #{})
+    ).
+
+local_process_route_provider_test() ->
+    {ok, Script} = file:read_file("test/test.lua"),
+    Node = hb_http_server:start_node(#{
+        priv_wallet => ar_wallet:new(),
+        route_provider => #{
+            <<"path">> => <<"/router~node-process@1.0/now/known-routes">>
+        },
+        node_processes => #{
+            <<"router">> => #{
+                <<"device">> => <<"process@1.0">>,
+                <<"execution-device">> => <<"lua@5.3a">>,
+                <<"scheduler-device">> => <<"scheduler@1.0">>,
+                <<"script">> => Script,
+                <<"node">> => <<"router-node">>,
+                <<"function">> => <<"compute_routes">>
+            }
+        }
+    }),
+    ?assertEqual(
+        {ok, <<"test1">>},
+        hb_http:get(Node, <<"/~router@1.0/routes/1/template">>, #{})
+    ),
+    % Query the route 10 times with the same path. This should yield 2 different
+    % results, as the route provider should choose 1 node of a set of 2 at random.
+    Responses =
+        lists:map(
+            fun(_) ->
+                hb_util:ok(
+                    hb_http:get(
+                        Node,
+                        <<"/~router@1.0/route?route-path=test2">>,
+                        #{
+                            <<"route-path">> => <<"test2">>
+                        }
+                    )
+                )
+            end,
+            lists:seq(1, 10)
+        ),
+    ?event({responses, Responses}),
+    ?assertEqual(2, sets:size(sets:from_list(Responses))).
+
+weighted_random_strategy_test() ->
+    Nodes =
+        [
+            #{ <<"host">> => <<"1">>, <<"weight">> => 1 },
+            #{ <<"host">> => <<"2">>, <<"weight">> => 99 }
+        ],
+    SimRes = simulate(1000, 1, Nodes, <<"By-Weight">>),
+    [One, _] = simulation_distribution(SimRes, Nodes),
+    ?assert(One < 25),
+    ?assert(One > 4).
 
 strategy_suite_test_() ->
     lists:map(
@@ -419,7 +589,7 @@ device_call_from_singleton_test() ->
     ?event({msgs, Msgs}),
     ?assertEqual(
         {ok, Routes},
-        hb_converge:resolve_many(Msgs, NodeOpts)
+        hb_ao:resolve_many(Msgs, NodeOpts)
     ).
     
 
@@ -459,7 +629,7 @@ add_route_test() ->
     Res =
         hb_http:post(
             Node,
-            hb_message:attest(
+            hb_message:commit(
                 #{
                     <<"path">> => <<"/~router@1.0/routes">>,
                     <<"template">> => <<"/some/new/path">>,
@@ -476,6 +646,50 @@ add_route_test() ->
     ?event({get_res, GetRes}),
     {ok, Recvd} = GetRes,
     ?assertMatch(<<"new">>, Recvd).
+
+relay_nearest_test() ->
+    Peer1 = <<"https://compute-1.forward.computer">>,
+    Peer2 = <<"https://compute-2.forward.computer">>,
+    HTTPSOpts = #{ http_client => httpc },
+    {ok, Address1} = hb_http:get(Peer1, <<"/~meta@1.0/info/address">>, HTTPSOpts),
+    {ok, Address2} = hb_http:get(Peer2, <<"/~meta@1.0/info/address">>, HTTPSOpts),
+    Peers = [Address1, Address2],
+    Node =
+        hb_http_server:start_node(#{
+            priv_wallet => ar_wallet:new(),
+            routes => [
+                #{
+                    <<"template">> => <<"/.*~process@1.0/.*">>,
+                    <<"strategy">> => <<"Nearest">>,
+                    <<"nodes">> => [
+                        #{
+                            <<"prefix">> => Peer1,
+                            <<"wallet">> => Address1
+                        },
+                        #{
+                            <<"prefix">> => Peer2,
+                            <<"wallet">> => Address2
+                        }    
+                    ]
+                }
+            ]
+        }),
+    {ok, RelayRes} =
+        hb_http:get(
+            Node,
+            <<
+                "/~relay@1.0/call?relay-path=",
+                    "/CtOVB2dBtyN_vw3BdzCOrvcQvd9Y1oUGT-zLit8E3qM~process@1.0",
+                    "/slot"
+            >>,
+            #{}
+        ),
+    HasValidSigner =
+        lists:any(
+            fun(Peer) -> lists:member(Peer, hb_message:signers(RelayRes)) end,
+            Peers
+        ),
+    ?assert(HasValidSigner).
 
 %%% Statistical test utilities
 

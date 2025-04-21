@@ -36,3 +36,7 @@ cache-*
 *.dot
 *.svg
 *.wat
+*.gguf
+
+cu/
+mkdocs-site/
