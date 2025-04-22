@@ -144,8 +144,8 @@ run_inference_http(_, Request, NodeMsg) ->
 			[Ptr] = hb_ao:get(<<"results/wasm/output">>, StateRes),
 			{ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
 			?event({wasm_output, Output}),
-            % {ok, Output};
-            {ok, <<"Hello World">>};
+            {ok, Output};
+            % {ok, <<"Hello World">>};
         _ -> {error, <<"Unsupported method">>}
     end.
     
