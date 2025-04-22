@@ -80,7 +80,7 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 $(WASI_NN_DIR):
 	git clone \
 		https://github.com/apuslabs/wasi_nn_backend.git \
-		$(WASI_NN_DIR)
+		$(WASI_NN_DIR) \
 		-b wasi-nn \
 		--single-branch
 
