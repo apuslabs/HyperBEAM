@@ -5,6 +5,7 @@ _vendor
 data
 .eunit
 *.o
+*.so
 *.beam
 *.plt
 *.swp
