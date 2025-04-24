@@ -2,7 +2,7 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -on_load(init/0).
--export([run_inference/1]).
+-export([init_backend/0,init_execution_context/1,set_input/2,get_output/1,compute/1,deinit_backend/1,run_inference/2]).
 
 init() ->
     PrivDir = code:priv_dir(hb),
@@ -38,27 +38,16 @@ get_output(_Context) ->
     erlang:nif_error("NIF library not loaded").
 deinit_backend(_Context) ->
     erlang:nif_error("NIF library not loaded").
-run_inference(Prompt) ->
-    ModelPath = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
-    Config = "{\"n_gpu_layers\":32}",
-    case filelib:is_regular(ModelPath) of
-        true ->
-            {ok, Context} = init_backend(),
-            try
-                ?assertNotEqual(undefined, Context),
-				% TODO: check rets
-                load_by_name_with_config(Context, ModelPath, Config),
-                init_execution_context(Context),
-                set_input(Context, binary_to_list(Prompt)),
-                compute(Context),
-                get_output(Context)
-            catch
-                Error:Reason ->
-                    io:format("Test failed: ~p:~p~n", [Error, Reason]),
-                    erlang:error(Reason)
-            after
-                deinit_backend(Context)
-            end;
-        false ->
-            ?event("Skipping test - model file not found")
-    end.
+run_inference(_Context,_Prompt) ->
+	erlang:nif_error("NIF library not loaded").
+
+run_inference_test() ->
+	Path = "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf",
+	Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+	Prompt = "What is the meaning of life",
+	{ok, Context} = init_backend(),
+	load_by_name_with_config(Context, Path, Config),
+	init_execution_context(Context),
+	{ok, Output} = run_inference(Context,Prompt),
+	?assertNotEqual(Output, "").
+

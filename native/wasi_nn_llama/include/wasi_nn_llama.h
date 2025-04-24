@@ -6,8 +6,12 @@
  #ifndef WASI_NN_TYPES_H
  #define WASI_NN_TYPES_H
  
- #include <stdint.h>
- #include <stdbool.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
  
  /**
   * ERRORS
@@ -17,22 +21,33 @@
  // sync up with
  // https://github.com/WebAssembly/wasi-nn/blob/main/wit/wasi-nn.wit#L136 Error
  // codes returned by functions in this API.
- typedef enum
- {
+ typedef enum {
+	 // No error occurred.
 	 success = 0,
+	 // Caller module passed an invalid argument.
 	 invalid_argument,
+	 // Invalid encoding.
 	 invalid_encoding,
-	 missing_memory,
-	 busy,
+	 // The operation timed out.
+	 timeout,
+	 // Runtime Error.
 	 runtime_error,
+	 // Unsupported operation.
 	 unsupported_operation,
+	 // Graph is too large.
 	 too_large,
+	 // Graph not found.
 	 not_found,
-	 // specified for WasmEdge-wasi-nn
-	 end_of_sequence = 100,
-	 context_full = 101,
-	 prompt_tool_long = 102,
-	 model_not_found = 103,
+	 // The operation is insecure or has insufficient privilege to be performed.
+	 // e.g., cannot access a hardware feature requested
+	 security,
+	 // The operation failed for an unspecified reason.
+	 unknown,
+	 // for WasmEdge-wasi-nn
+	 end_of_sequence = 100,  // End of Sequence Found.
+	 context_full = 101,     // Context Full.
+	 prompt_tool_long = 102, // Prompt Too Long.
+	 model_not_found = 103,  // Model Not Found.
  } wasi_nn_error;
  
  /**
@@ -44,22 +59,19 @@
  //
  // The array length matches the tensor rank and each element in the array
  // describes the size of each dimension.
- typedef struct
- {
+ typedef struct {
 	 uint32_t *buf;
 	 uint32_t size;
  } tensor_dimensions;
  
- typedef enum
- {
-	 fp16 = 0,
-	 fp32,
-	 fp64,
-	 bf16,
-	 u8,
-	 i32,
-	 i64
- } tensor_type;
+ #if WASM_ENABLE_WASI_EPHEMERAL_NN != 0
+ // sync up with
+ // https://github.com/WebAssembly/wasi-nn/blob/main/wit/wasi-nn.wit#L27
+ // The type of the elements in a tensor.
+ typedef enum { fp16 = 0, fp32, fp64, bf16, u8, i32, i64 } tensor_type;
+ #else
+ typedef enum { fp16 = 0, fp32, up8, ip32 } tensor_type;
+ #endif /* WASM_ENABLE_WASI_EPHEMERAL_NN != 0 */
  
  // The tensor data.
  //
@@ -72,8 +84,7 @@
  typedef uint8_t *tensor_data;
  
  // A tensor.
- typedef struct
- {
+ typedef struct {
 	 // Describe the size of the tensor (e.g., 2x2x2x2 -> [2, 2, 2, 2]). To
 	 // represent a tensor containing a single value, use `[1]` for the tensor
 	 // dimensions.
@@ -83,18 +94,6 @@
 	 // Contains the tensor data.
 	 tensor_data data;
  } tensor;
- 
- typedef struct {
-	 uint32_t buf_offset;
-	 uint32_t size;
- } tensor_dimensions_wasm;
- 
- typedef struct {
-	 tensor_dimensions_wasm dimensions;
-	 tensor_type type;
-	 uint32_t data_offset;
-	 uint32_t data_size;
- } tensor_wasm;
  
  /**
   * GRAPH
@@ -106,14 +105,12 @@
  // This consists of an array of buffers because implementing backends may encode
  // their graph IR in parts (e.g., OpenVINO stores its IR and weights
  // separately).
- typedef struct
- {
+ typedef struct {
 	 uint8_t *buf;
 	 uint32_t size;
  } graph_builder;
  
- typedef struct
- {
+ typedef struct {
 	 graph_builder *buf;
 	 uint32_t size;
  } graph_builder_array;
@@ -126,8 +123,7 @@
  // Describes the encoding of the graph. This allows the API to be implemented by
  // various backends that encode (i.e., serialize) their graph IR with different
  // formats.
- typedef enum
- {
+ typedef enum {
 	 openvino = 0,
 	 onnx,
 	 tensorflow,
@@ -139,15 +135,43 @@
  } graph_encoding;
  
  // Define where the graph should be executed.
- typedef enum execution_target
- {
-	 cpu = 0,
-	 gpu,
-	 tpu
- } execution_target;
+ typedef enum execution_target { cpu = 0, gpu, tpu } execution_target;
  
  // Bind a `graph` to the input and output tensors for an inference.
  typedef uint32_t graph_execution_context;
  
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ init_backend(void **ctx) ;
+ 
+ __attribute__((visibility("default"))) wasi_nn_error
+ deinit_backend(void *ctx);
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ load_by_name_with_config(void *ctx, const char *filename, uint32_t filename_len,
+	const char *config, uint32_t config_len, graph *g);
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ init_execution_context(void *ctx, graph g, graph_execution_context *exec_ctx);
+ 
+ __attribute__((visibility("default"))) wasi_nn_error
+ run_inference(void *ctx, graph_execution_context exec_ctx, uint32_t index,
+		   tensor *input_tensor,tensor_data output_tensor, uint32_t *output_tensor_size);
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ set_input(void *ctx, graph_execution_context exec_ctx, uint32_t index,
+	  tensor *wasi_nn_tensor);
+ 
+ __attribute__((visibility("default"))) wasi_nn_error
+ compute(void *ctx, graph_execution_context exec_ctx);
+ 
+ __attribute__((visibility("default"))) wasi_nn_error
+ get_output(void *ctx, graph_execution_context exec_ctx, uint32_t index,
+	  tensor_data output_tensor, uint32_t *output_tensor_size);
+
+ 
+ #ifdef __cplusplus
+ }
+ #endif
  #endif
  

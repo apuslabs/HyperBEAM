@@ -33,7 +33,7 @@ else
 endif
 
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so
+wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_backend.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
 	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
@@ -81,16 +81,16 @@ $(WASI_NN_DIR):
 	git clone \
 		https://github.com/apuslabs/wasi_nn_backend.git \
 		$(WASI_NN_DIR) \
-		-b wasi-nn \
+		-b stage/wasi-nn \
 		--single-branch
 
-$(WASI_NN_DIR)/lib/libwasi_nn_llamacpp.so: $(WASI_NN_DIR) 
+$(WASI_NN_DIR)/lib/libwasi_nn_backend.so: $(WASI_NN_DIR) 
 	cmake \
 		$(WAMR_FLAGS) \
 		-S $(WASI_NN_DIR) \
 		-B $(WASI_NN_DIR)/build 
 	make -C $(WASI_NN_DIR)/build -j8
-	cp $(WASI_NN_DIR)/build/libwasi_nn_llamacpp.so ./native/wasi_nn_llama
+	cp $(WASI_NN_DIR)/build/libwasi_nn_backend.so ./native/wasi_nn_llama
 clean:
 	rebar3 clean
 
