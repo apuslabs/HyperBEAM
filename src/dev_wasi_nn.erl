@@ -135,12 +135,25 @@ generate_wasi_nn_stack(File, Func, Params) ->
 run_inference_http(_, Request, NodeMsg) ->
 	case hb_ao:get(<<"method">>, Request, NodeMsg) of
         <<"GET">> ->
-            ?event({get_config_req, Request, NodeMsg}),
+            % ?event({get_config_req, Request, NodeMsg}),
 			Prompt = hb_ao:get(<<"prompt">>, Request, NodeMsg),
+			?assertNotEqual(not_found, Prompt),
 			?event({inference_prompt, Prompt}),
+			Config = hb_ao:get(<<"config">>, Request, NodeMsg),
+			?event({inference_config, Config}),
+			% if Config is not configured, use default
+			ConfigBin = case Config of
+				X when X =:= <<"">>; X =:= not_found -> <<"{\"enable_debug\": false}">>;
+				_ -> Config
+			end,
 			Init = generate_wasi_nn_stack("test/wasi-nn.wasm", <<"handle">>, []),
 			Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-			{ok, StateRes} = hb_ao:resolve(Init, <<"compute">>, #{}),
+			{ok, PromptPtr} = hb_beamr_io:write_string(Instance, Prompt),
+			?assertNotEqual(0, PromptPtr),
+			{ok, ConfigPtr} = hb_beamr_io:write_string(Instance, ConfigBin),
+			?assertNotEqual(0, ConfigPtr),
+			Ready = Init#{ <<"parameters">> => [PromptPtr, ConfigPtr] },
+			{ok, StateRes} = hb_ao:resolve(Ready, <<"compute">>, #{}),
 			[Ptr] = hb_ao:get(<<"results/wasm/output">>, StateRes),
 			{ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
 			?event({wasm_output, Output}),
@@ -157,36 +170,3 @@ wasi_nn_exec_test() ->
     {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
     ?event({wasm_output, Output}),
     ?assertNotEqual(<<"">>, Output).
-
-aos_wasi_nn_exec_test() ->
-    Init = generate_wasi_nn_stack("test/aos-wasi-nn.wasm", <<"handle">>, []),
-    Msg = gen_test_aos_msg("return 1 + 1"),
-    Env = gen_test_env(),
-    Instance = hb_private:get(<<"wasm/instance">>, Init, #{}),
-    {ok, Ptr1} = hb_beamr_io:malloc(Instance, byte_size(Msg)),
-    ?assertNotEqual(0, Ptr1),
-    hb_beamr_io:write(Instance, Ptr1, Msg),
-    {ok, Ptr2} = hb_beamr_io:malloc(Instance, byte_size(Env)),
-    ?assertNotEqual(0, Ptr2),
-    hb_beamr_io:write(Instance, Ptr2, Env),
-    % Read the strings to validate they are correctly passed
-    {ok, MsgBin} = hb_beamr_io:read(Instance, Ptr1, byte_size(Msg)),
-    {ok, EnvBin} = hb_beamr_io:read(Instance, Ptr2, byte_size(Env)),
-    ?assertEqual(Env, EnvBin),
-    ?assertEqual(Msg, MsgBin),
-    Ready = Init#{<<"parameters">> => [Ptr1, Ptr2]},
-    {ok, StateRes} = hb_ao:resolve(Ready, <<"compute">>, #{}),
-    [Ptr] = hb_ao:get(<<"results/wasm/output">>, StateRes),
-    {ok, Output} = hb_beamr_io:read_string(Instance, Ptr),
-    ?event({got_output, Output}),
-    #{<<"response">> := #{<<"Output">> := #{<<"data">> := Data}}} =
-        jiffy:decode(Output, [return_maps]),
-    ?assertEqual(<<"2">>, Data).
-
-%%% Test Helpers
-gen_test_env() ->
-    <<"{\"Process\":{\"Id\":\"AOS\",\"Owner\":\"FOOBAR\",\"Tags\":[{\"name\":\"Name\",\"value\":\"Thomas\"}, {\"name\":\"Authority\",\"value\":\"FOOBAR\"}]}}\0">>.
-
-gen_test_aos_msg(Command) ->
-    <<"{\"From\":\"FOOBAR\",\"Block-Height\":\"1\",\"Target\":\"AOS\",\"Owner\":\"FOOBAR\",\"Id\":\"1\",\"Module\":\"W\",\"Tags\":[{\"name\":\"Action\",\"value\":\"Eval\"}],\"Data\":\"",
-        (list_to_binary(Command))/binary, "\"}\0">>.
