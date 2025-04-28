@@ -56,11 +56,10 @@ load_by_name_with_config(Msg1, Msg2, Opts) ->
     {ok, Filename} = hb_beamr_io:read(Instance, FilenamePtr, FilenameLen),
     {ok, Config} = hb_beamr_io:read(Instance, ConfigPtr, ConfigLen),
     ?event({load_by_name_with_config, Filename, Config}),
-    NNInstance = get_instance(Msg1, Msg2, Opts),
-    % Load the model
-    ?event({load_model, NNInstance, "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf", Config}),
-    dev_wasi_nn_nif:load_by_name_with_config(
-        NNInstance, "test/Qwen2.5-1.5B-Instruct.Q2_K.gguf", binary_to_list(Config)
+    % Use the once version of the function to ensure we only load the model once
+    % regardless of how many WASM instances are created
+    {ok, NNInstance} = dev_wasi_nn_nif:load_by_name_with_config_once(
+        dummy_context, "test/qwen2.5-14b-instruct-q2_k.gguf", binary_to_list(Config)
     ),
     % Write Graph to the model
     hb_beamr_io:write(Instance, GraphPtr, <<0>>),
@@ -80,7 +79,7 @@ init_execution_context(Msg1, Msg2, Opts) ->
     [Graph, CtxPtr | _] = hb_ao:get(<<"args">>, Msg2, Opts),
     ?event({init_execution_context, Graph}),
     NNInstance = get_instance(Msg1, Msg2, Opts),
-    dev_wasi_nn_nif:init_execution_context(NNInstance),
+    dev_wasi_nn_nif:init_execution_context_once(NNInstance),
     hb_beamr_io:write(Instance, CtxPtr, <<0>>),
     {ok, #{<<"state">> => State, <<"results">> => [0]}}.
 
