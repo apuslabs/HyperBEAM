@@ -152,16 +152,16 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
 	DRV_DEBUG("Start to run_inference \n" );
 	LlamaContext* ctx;
     char *input = NULL;
-    uint8_t *output_buffer = NULL;
+    tensor_data output;
     ERL_NIF_TERM ret_term; // Variable for the return term
     ERL_NIF_TERM result_bin;
     uint32_t output_size = 0; // Initialize output_size
 
     // Allocate memory
     input = (char *)malloc(MAX_INPUT_SIZE * sizeof(char));
-    output_buffer = (uint8_t *)malloc(MAX_OUTPUT_SIZE * sizeof(uint8_t));
+    output = (uint8_t *)malloc(MAX_OUTPUT_SIZE * sizeof(uint8_t));
     // Check allocations
-    if (!input || !output_buffer ) {
+    if (!input || !output ) {
         fprintf(stderr, "Initial memory allocation failed\n");
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "allocation_failed"));
         goto cleanup; // Jump to cleanup section
@@ -184,14 +184,13 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
 		.type =  fp32,
         .data = (tensor_data)input,
     };
-
     // Run inference
-    if (g_wasi_nn_functions.run_inference(ctx->ctx, ctx->exec_ctx, 0, &input_tensor, output_buffer, &output_size) != success) {
+    if (g_wasi_nn_functions.run_inference(ctx->ctx, ctx->exec_ctx, 0, &input_tensor, output, &output_size) != success) {
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "run_inference_failed"));
         goto cleanup;
     }
 	DRV_DEBUG("Output size: %d\n", output_size);
-	DRV_DEBUG("Output  %s\n", output_buffer);
+	DRV_DEBUG("Output  %s\n", output);
 	// TODO limit output size
     unsigned char* bin_data = enif_make_new_binary(env, output_size, &result_bin);
     if (!bin_data) {
@@ -201,12 +200,12 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
     }
 
     // Copy the output_buffer into the Erlang binary
-    memcpy(bin_data, output_buffer, output_size);
+    memcpy(bin_data, output, output_size);
 	ret_term = enif_make_tuple2(env, enif_make_atom(env, "ok"), result_bin);
 cleanup:
     // Free all allocated memory. free(NULL) is safe.
     free(input);
-    free(output_buffer);
+    free(output);
 	DRV_DEBUG("Clean all");
     return ret_term;
 }
