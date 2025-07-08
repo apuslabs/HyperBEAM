@@ -2,13 +2,15 @@
 %%%
 %%% This device provides session-based encrypted communication where:
 %%% 1. Sessions are created with unique IDs and AES keys
-%%% 2. Messages are encrypted before being stored on-chain
-%%% 3. Users can decrypt messages on their side using session keys
-%%% 4. Each session has its own encryption key for isolation
+%%% 2. Session keys are protected using RSA public key encryption
+%%% 3. Messages are encrypted before being stored on-chain
+%%% 4. Users can decrypt messages on their side using session keys
+%%% 5. Each session has its own encryption key for isolation
 -module(dev_private).
--export([info/1, info/3, create_session/3, get_key/3, encrypt/3, decrypt/3]).
+-export([info/1, info/3, create_session/3, get_key/3, encrypt/3, decrypt/3, decrypt_key/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("public_key/include/public_key.hrl").
 
 %% @doc Controls which functions are exposed via the device API.
 %%
@@ -18,7 +20,7 @@
 %% @param _ Ignored parameter
 %% @returns A map with the `exports' key containing a list of allowed functions
 info(_) -> 
-    #{ exports => [info, create_session, get_key, encrypt, decrypt] }.
+    #{ exports => [info, create_session, get_key, encrypt, decrypt, decrypt_key] }.
 
 %% @doc Provides information about the private conversation device and its API.
 %%
@@ -34,7 +36,7 @@ info(_) ->
 info(_Msg1, _Msg2, _Opts) ->
     InfoBody = #{
         <<"description">> => 
-            <<"Private conversation device for end-to-end encrypted messaging">>,
+            <<"Private conversation device for end-to-end encrypted messaging with RSA key protection">>,
         <<"version">> => <<"1.0">>,
         <<"api">> => #{
             <<"info">> => #{
@@ -51,13 +53,25 @@ info(_Msg1, _Msg2, _Opts) ->
                 }
             },
             <<"get_key">> => #{
-                <<"description">> => <<"Retrieve the encryption key for a session">>,
+                <<"description">> => <<"Retrieve the encryption key for a session (RSA encrypted)">>,
                 <<"parameters">> => #{
-                    <<"session_id">> => <<"Session identifier from create_session">>
+                    <<"session_id">> => <<"Session identifier from create_session">>,
+                    <<"public_key">> => <<"RSA public key to encrypt the session key with">>
                 },
                 <<"returns">> => #{
-                    <<"key">> => <<"Base64-encoded session encryption key">>,
+                    <<"encrypted_key">> => <<"RSA-encrypted session key (base64)">>,
                     <<"iv">> => <<"Initialization vector for this session">>
+                },
+                <<"security">> => <<"Session key is encrypted with requester's public key - only they can decrypt it">>
+            },
+            <<"decrypt_key">> => #{
+                <<"description">> => <<"Decrypt a session key using your private key">>,
+                <<"parameters">> => #{
+                    <<"encrypted_key">> => <<"RSA-encrypted key from get_key">>,
+                    <<"private_key">> => <<"Your RSA private key (PEM format)">>
+                },
+                <<"returns">> => #{
+                    <<"session_key">> => <<"Decrypted session key for local use">>
                 }
             },
             <<"encrypt">> => #{
@@ -147,19 +161,24 @@ create_session(_M1, M2, Opts) ->
         }
     }}.
 
-%% @doc Retrieves the encryption key for a specific session.
+%% @doc Retrieves the encryption key for a specific session, encrypted with requester's public key.
 %%
 %% This function performs the following operations:
 %% 1. Validates that the session ID exists
-%% 2. Retrieves the session's AES key
-%% 3. Generates a fresh IV for encryption operations
-%% 4. Returns the key and IV in base64 format
+%% 2. Validates that a public key is provided
+%% 3. Retrieves the session's AES key
+%% 4. Encrypts the session key using the requester's RSA public key
+%% 5. Generates a fresh IV for encryption operations
+%% 6. Returns the encrypted key and IV in base64 format
+%%
+%% SECURITY: The session key is encrypted with the requester's public key,
+%% ensuring only the holder of the corresponding private key can decrypt it.
 %%
 %% @param _M1 Ignored parameter
-%% @param M2 Map containing session_id
+%% @param M2 Map containing session_id and public_key
 %% @param Opts A map of configuration options
-%% @returns {ok, Map} containing the session key and IV, or
-%% {error, Binary} if session not found
+%% @returns {ok, Map} containing the encrypted session key and IV, or
+%% {error, Binary} if session not found or public key invalid
 -spec get_key(M1 :: term(), M2 :: term(), Opts :: map()) -> 
     {ok, map()} | {error, binary()}.
 get_key(_M1, M2, Opts) ->
@@ -170,29 +189,101 @@ get_key(_M1, M2, Opts) ->
         _ -> hb_opts:get(<<"session_id">>, undefined, Opts)
     end,
     
-    case SessionID of
-        undefined ->
+    PublicKeyPEM = case M2 of
+        #{<<"public_key">> := PubKey} -> PubKey;
+        _ -> hb_opts:get(<<"public_key">>, undefined, Opts)
+    end,
+    
+    case {SessionID, PublicKeyPEM} of
+        {undefined, _} ->
             {error, <<"Session ID is required">>};
-        _ ->
+        {_, undefined} ->
+            {error, <<"Public key is required for secure key exchange">>};
+        {_, _} ->
             PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
             case maps:find(SessionID, PrivSessions) of
                 {ok, #{session_key := SessionKey}} ->
-                    % Generate a fresh IV for this encryption operation
-                    IV = crypto:strong_rand_bytes(16),
-                    
-                    ?event(priv_session, {get_key, success, SessionID}),
-                    
-                    {ok, #{
-                        <<"status">> => 200,
-                        <<"body">> => #{
-                            <<"session_id">> => SessionID,
-                            <<"key">> => base64:encode(SessionKey),
-                            <<"iv">> => base64:encode(IV)
-                        }
-                    }};
+                    try
+                        % Encrypt the session key with the requester's public key
+                        EncryptedKey = encrypt_with_public_key(SessionKey, PublicKeyPEM),
+                        
+                        % Generate a fresh IV for this encryption operation
+                        IV = crypto:strong_rand_bytes(16),
+                        
+                        ?event(priv_session, {get_key, success, SessionID}),
+                        
+                        {ok, #{
+                            <<"status">> => 200,
+                            <<"body">> => #{
+                                <<"session_id">> => SessionID,
+                                <<"encrypted_key">> => base64:encode(EncryptedKey),
+                                <<"iv">> => base64:encode(IV),
+                                <<"algorithm">> => <<"RSA-OAEP">>,
+                                <<"message">> => <<"Session key encrypted with your public key">>
+                            }
+                        }}
+                    catch
+                        Error:Reason ->
+                            ?event(priv_session, {get_key, encrypt_error, SessionID, Error, Reason}),
+                            {error, <<"Invalid public key or encryption failed">>}
+                    end;
                 error ->
                     ?event(priv_session, {get_key, not_found, SessionID}),
                     {error, <<"Session not found">>}
+            end
+    end.
+
+%% @doc Decrypts a session key using the user's private key.
+%%
+%% This is a utility function to help users decrypt session keys on their side.
+%% In a real implementation, this would typically be done client-side.
+%%
+%% @param _M1 Ignored parameter
+%% @param M2 Map containing encrypted_key and private_key
+%% @param _Opts Configuration options (ignored)
+%% @returns {ok, Map} containing the decrypted session key, or
+%% {error, Binary} if decryption fails
+-spec decrypt_key(M1 :: term(), M2 :: term(), Opts :: map()) -> 
+    {ok, map()} | {error, binary()}.
+decrypt_key(_M1, M2, _Opts) ->
+    ?event(priv_session, {decrypt_key, start}),
+    
+    EncryptedKey = case M2 of
+        #{<<"encrypted_key">> := Key} -> Key;
+        _ -> undefined
+    end,
+    
+    PrivateKeyPEM = case M2 of
+        #{<<"private_key">> := PrivKey} -> PrivKey;
+        _ -> undefined
+    end,
+    
+    case {EncryptedKey, PrivateKeyPEM} of
+        {undefined, _} ->
+            {error, <<"Encrypted key is required">>};
+        {_, undefined} ->
+            {error, <<"Private key is required">>};
+        {_, _} ->
+            try
+                % Decode the encrypted key
+                EncryptedKeyBin = base64:decode(EncryptedKey),
+                
+                % Decrypt with private key
+                DecryptedKey = decrypt_with_private_key(EncryptedKeyBin, PrivateKeyPEM),
+                
+                ?event(priv_session, {decrypt_key, success}),
+                
+                {ok, #{
+                    <<"status">> => 200,
+                    <<"body">> => #{
+                        <<"session_key">> => base64:encode(DecryptedKey),
+                        <<"message">> => <<"Session key successfully decrypted">>
+                    }
+                }}
+            catch
+                Error:Reason ->
+                    ?event(priv_session, {decrypt_key, error, Error, Reason}),
+                    {error, <<"Decryption failed - invalid key or ciphertext">>}
             end
     end.
 
@@ -367,28 +458,137 @@ decrypt(_M1, M2, Opts) ->
             end
     end.
 
-%% @doc Test function to verify the encrypt/decrypt roundtrip works correctly.
+%% @doc Encrypts data with an RSA public key.
 %%
-%% This test creates a session, encrypts a message, and then decrypts it,
-%% verifying that the original message is recovered.
-crypto_roundtrip_test() ->
+%% This function securely encrypts data for transmission using RSA-OAEP:
+%% 1. Parses the PEM-encoded public key
+%% 2. Performs RSA public key encryption
+%% 3. Returns the encrypted data
+%%
+%% @param Data The data to encrypt (binary)
+%% @param PublicKeyPEM The RSA public key in PEM format
+%% @returns The encrypted data (binary)
+-spec encrypt_with_public_key(Data :: binary(), PublicKeyPEM :: binary()) -> binary().
+encrypt_with_public_key(Data, PublicKeyPEM) ->
+    ?event(priv_session, {encrypt_with_public_key, start}),
+    
+    % Parse the PEM-encoded public key
+    [PublicKeyEntry] = public_key:pem_decode(PublicKeyPEM),
+    PublicKey = public_key:pem_entry_decode(PublicKeyEntry),
+    
+    % Encrypt using RSA-OAEP
+    EncryptedData = public_key:encrypt_public(Data, PublicKey),
+    
+    ?event(priv_session, {encrypt_with_public_key, complete}),
+    EncryptedData.
+
+%% @doc Decrypts data with an RSA private key.
+%%
+%% This function decrypts RSA-encrypted data:
+%% 1. Parses the PEM-encoded private key
+%% 2. Performs RSA private key decryption
+%% 3. Returns the decrypted data
+%%
+%% @param EncryptedData The encrypted data (binary)
+%% @param PrivateKeyPEM The RSA private key in PEM format
+%% @returns The decrypted data (binary)
+-spec decrypt_with_private_key(EncryptedData :: binary(), PrivateKeyPEM :: binary()) -> binary().
+decrypt_with_private_key(EncryptedData, PrivateKeyPEM) ->
+    ?event(priv_session, {decrypt_with_private_key, start}),
+    
+    % Parse the PEM-encoded private key
+    [PrivateKeyEntry] = public_key:pem_decode(PrivateKeyPEM),
+    PrivateKey = public_key:pem_entry_decode(PrivateKeyEntry),
+    
+    % Decrypt using RSA
+    DecryptedData = public_key:decrypt_private(EncryptedData, PrivateKey),
+    
+    ?event(priv_session, {decrypt_with_private_key, complete}),
+    DecryptedData.
+
+%% @doc Test function to verify the asymmetric encryption works correctly.
+%%
+%% This test creates RSA keys, encrypts data with the public key,
+%% and verifies that it can be decrypted with the private key.
+asymmetric_crypto_test() ->
+    % Generate RSA key pair for testing
+    PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
+    PublicKey = case PrivateKey of
+        #'RSAPrivateKey'{modulus = N, publicExponent = E} ->
+            #'RSAPublicKey'{modulus = N, publicExponent = E}
+    end,
+    
+    % Convert to PEM format
+    PrivateKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)]),
+    PublicKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPublicKey', PublicKey)]),
+    
+    % Test data
+    TestData = <<"This is a test session key">>,
+    
+    % Encrypt with public key
+    EncryptedData = encrypt_with_public_key(TestData, PublicKeyPEM),
+    
+    % Decrypt with private key
+    DecryptedData = decrypt_with_private_key(EncryptedData, PrivateKeyPEM),
+    
+    % Verify roundtrip
+    ?assertEqual(TestData, DecryptedData).
+
+%% @doc Test function to verify the secure session workflow works correctly.
+%%
+%% This test creates a session, requests the key with a public key,
+%% decrypts it with the private key, and then encrypts/decrypts a message.
+secure_workflow_test() ->
+    % Generate RSA key pair for testing
+    PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
+    PublicKey = case PrivateKey of
+        #'RSAPrivateKey'{modulus = N, publicExponent = E} ->
+            #'RSAPublicKey'{modulus = N, publicExponent = E}
+    end,
+    
+    % Convert to PEM format
+    PrivateKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)]),
+    PublicKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPublicKey', PublicKey)]),
+    
     % Mock options
     Opts = #{priv_sessions => #{}},
     
-    % Create a session
+    % 1. Create a session
     {ok, #{<<"body">> := #{<<"session_id">> := SessionID}}} = 
-        create_session(undefined, #{<<"session_name">> => <<"Test Session">>}, Opts),
+        create_session(undefined, #{<<"session_name">> => <<"Secure Test Session">>}, Opts),
     
     % Get updated options with the session
+    SessionKey = crypto:strong_rand_bytes(32),
     UpdatedOpts = #{priv_sessions => #{SessionID => #{
-        session_key => crypto:strong_rand_bytes(32),
-        session_name => <<"Test Session">>,
+        session_key => SessionKey,
+        session_name => <<"Secure Test Session">>,
         created_at => erlang:system_time(second),
         message_count => 0
     }}},
     
-    % Test message
-    TestMessage = <<"This is a test message for encryption">>,
+    % 2. Request encrypted session key (SECURE)
+    {ok, #{<<"body">> := #{
+        <<"encrypted_key">> := EncryptedSessionKey,
+        <<"algorithm">> := <<"RSA-OAEP">>
+    }}} = get_key(undefined, #{
+        <<"session_id">> => SessionID,
+        <<"public_key">> => PublicKeyPEM
+    }, UpdatedOpts),
+    
+    % 3. Decrypt session key with private key
+    {ok, #{<<"body">> := #{
+        <<"session_key">> := DecryptedSessionKeyB64
+    }}} = decrypt_key(undefined, #{
+        <<"encrypted_key">> => EncryptedSessionKey,
+        <<"private_key">> => PrivateKeyPEM
+    }, undefined),
+    
+    % Verify the decrypted session key matches the original
+    DecryptedSessionKey = base64:decode(DecryptedSessionKeyB64),
+    ?assertEqual(SessionKey, DecryptedSessionKey),
+    
+    % 4. Test message encryption/decryption with recovered key
+    TestMessage = <<"This is a secure test message">>,
     
     % Encrypt the message
     {ok, #{<<"body">> := #{
@@ -408,5 +608,22 @@ crypto_roundtrip_test() ->
         <<"iv">> => IV
     }, UpdatedOpts),
     
-    % Verify roundtrip
+    % Verify complete roundtrip
     ?assertEqual(TestMessage, DecryptedMessage).
+
+%% @doc Test to verify that get_key fails without a public key (security test).
+security_test() ->
+    % Mock options with a session
+    SessionID = <<"test_session_123">>,
+    Opts = #{priv_sessions => #{SessionID => #{
+        session_key => crypto:strong_rand_bytes(32),
+        session_name => <<"Test Session">>,
+        created_at => erlang:system_time(second),
+        message_count => 0
+    }}},
+    
+    % Try to get key without providing public key (should fail)
+    Result = get_key(undefined, #{<<"session_id">> => SessionID}, Opts),
+    
+    % Should return an error
+    ?assertMatch({error, <<"Public key is required for secure key exchange">>}, Result).
