@@ -1,3 +1,4 @@
+config.*
 .rebar3
 _build
 _checkouts
@@ -19,6 +20,7 @@ logs
 *.iml
 rebar3.crashdump
 *~
+/venv
 
 *.json
 !.vscode/*
@@ -31,11 +33,16 @@ native/hb_beamr/*.d
 
 priv/*
 .DS_STORE
-TEST-data*
-test-cache/*
-TEST-cache**/**
+cache-*
 
 *.dot
 *.svg
-mainnet-cache/
-store-inputs/
+
+cu/
+mkdocs-site/
+mkdocs-site-id.txt
+mkdocs-site-manifest.csv
+
+!test/admissible-report-wallet.json
+!test/admissible-report.json
+!test/config.json

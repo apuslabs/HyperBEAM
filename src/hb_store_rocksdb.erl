@@ -9,12 +9,12 @@
 -module(hb_store_rocksdb).
 -behaviour(gen_server).
 -behaviour(hb_store).
--export([start/1, start_link/1, stop/1, scope/1]).
+-export([enabled/0, start/1, start_link/1, stop/1, scope/1]).
 -export([read/2, write/3, list/2, reset/1, list/0]).
 -export([make_link/3, make_group/2, type/2, add_path/3, path/2, resolve/2]).
 -export([init/1, terminate/2, handle_cast/2, handle_info/2, handle_call/3]).
 -export([code_change/3]).
--include("src/include/hb.hrl").
+-include("include/hb.hrl").
 
 -define(TIMEOUT, 5000).
 
@@ -23,20 +23,44 @@
 
 -type value_type() :: link | raw | group.
 
-start_link({hb_store_rocksdb, #{ prefix := Dir}}) ->
+%% @doc Returns whether the RocksDB store is enabled.
+-ifdef(ENABLE_ROCKSDB).
+enabled() -> true.
+-else.
+enabled() -> false.
+-endif.
+
+-ifdef(ENABLE_ROCKSDB).
+%% @doc Start the RocksDB store.
+start_link(#{ <<"store-module">> := hb_store_rocksdb, <<"name">> := Dir}) ->
+    ?event(rocksdb, {starting, Dir}),
+    application:ensure_all_started(rocksdb),
     gen_server:start_link({local, ?MODULE}, ?MODULE, Dir, []);
 start_link(Stores) when is_list(Stores) ->
-    case lists:keyfind(hb_store_rocksdb, 1, Stores) of
-        Store = {hb_store_rocksdb, _} ->
-            start_link(Store);
+    RocksStores =
+        [
+            Store
+        ||
+            Store = #{ <<"store-module">> := Module } <- Stores, 
+             Module =:= hb_store_rocksdb
+        ],
+    case RocksStores of
+        [Store] -> start_link(Store);
         _ -> ignore
     end;
 start_link(Store) ->
     ?event(rocksdb, {invalid_store_config, Store}),
     ignore.
 
+-else.
+start_link(_Opts) -> ignore.
+
+-endif.
+
+start(Opts = #{ <<"store-module">> := hb_store_rocksdb, <<"name">> := _Dir}) ->
+    start_link(Opts);
 start(Opts) ->
-    start_link({hb_store_rocksdb, Opts}).
+    start_link(Opts).
 
 -spec stop(any()) -> ok.
 stop(_Opts) ->
@@ -154,6 +178,8 @@ type(Opts, RawKey) ->
     Opts :: any(),
     Key :: binary(),
     Result :: ok | {error, already_added}.
+make_group(#{ <<"name">> := _DataDir }, Key) ->
+    gen_server:call(?MODULE, {make_group, Key}, ?TIMEOUT);
 make_group(_Opts, Key) ->
     gen_server:call(?MODULE, {make_group, Key}, ?TIMEOUT).
 
@@ -205,6 +231,10 @@ handle_cast(_Request, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+handle_call(Request, From, #{ db_handle := undefined, dir := Dir } = State) ->
+    % Re-initialize the DB handle if it's not set.
+    {ok, DBHandle} = open_rockdb(Dir),
+    handle_call(Request, From, State#{db_handle => DBHandle});
 handle_call({do_write, Key, Value}, _From, #{db_handle := DBHandle} = State) ->
     BaseName = filename:basename(Key),
     rocksdb:put(DBHandle, Key, Value, #{}),
@@ -230,12 +260,11 @@ handle_call({do_read, Key}, _From, #{db_handle := DBHandle} = State) ->
                 Err
         end,
     {reply, Response, State};
-handle_call(reset, _From, #{db_handle := DBHandle, dir := Dir}) ->
+handle_call(reset, _From, State = #{db_handle := DBHandle, dir := Dir}) ->
     ok = rocksdb:close(DBHandle),
-    ok = rocksdb:destroy(ensure_list(Dir), []),
-    {ok, NewDBHandle} = open_rockdb(Dir),
-    NewState = #{db_handle => NewDBHandle, dir => Dir},
-    {reply, ok, NewState};
+    ok = rocksdb:destroy(DirStr = ensure_list(Dir), []),
+    os:cmd(binary_to_list(<< "rm -Rf ", (list_to_binary(DirStr))/binary >>)),
+    {reply, ok, State#{ db_handle := undefined }};
 handle_call(list, _From, State = #{db_handle := DBHandle}) ->
     {ok, Iterator} = rocksdb:iterator(DBHandle, []),
     Items = collect(Iterator),
@@ -364,13 +393,18 @@ maybe_append_key_to_group(Key, CurrentDirContents) ->
 %%% Tests
 %%%=============================================================================
 
+-ifdef(ENABLE_ROCKSDB).
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
 
 get_or_start_server() ->
     % Store = lists:keyfind(hb_store_rocksdb2, 1, hb_store:test_stores()),
-    case start_link({hb_store_rocksdb, #{ prefix => "TEST-cache-rocks" }}) of
+    Opts = #{
+        <<"store-module">> => hb_store_rocksdb,
+        <<"name">> => <<"cache-TEST/rocksdb">>
+    },
+    case start_link(Opts) of
         {ok, Pid} ->
             Pid;
         {error, {already_started, Pid}} ->
@@ -524,13 +558,13 @@ api_test_() ->
                 "make_group/2 does not override folder contents",
                 fun() ->
                     write(#{}, <<"messages/id">>, <<"1">>),
-                    write(#{}, <<"messages/attestations">>, <<"2">>),
+                    write(#{}, <<"messages/commitments">>, <<"2">>),
 
                     ?assertEqual(ok, make_group(#{}, <<"messages">>)),
 
                     ?assertEqual(
                         list(#{}, <<"messages">>),
-                        {ok, [<<"attestations">>, <<"id">>]}
+                        {ok, [<<"id">>, <<"commitments">>]}
                     )
                 end
             },
@@ -571,4 +605,5 @@ api_test_() ->
             }
         ]}.
 
+-endif.
 -endif.

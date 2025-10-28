@@ -9,11 +9,11 @@
 %%% 
 %%% Because each WASM module runs as an independent async worker, if you plan
 %%% to run many instances in parallel, you should be sure to configure the 
-%%% BEAM to have enough async worker threads enabled (see `erl +A N` in the
+%%% BEAM to have enough async worker threads enabled (see `erl +A N' in the
 %%% Erlang manuals).
 %%% 
 %%% The core API is simple:
-%%% ```
+%%% <pre>
 %%%     start(WasmBinary) -> {ok, Port, Imports, Exports}
 %%%         Where:
 %%%             WasmBinary is the WASM binary to load.
@@ -32,9 +32,9 @@
 %%%     call(Port, FunName, Args[, Import, State, Opts]) -> {ok, Res, NewState}
 %%%         Where:
 %%%             ImportFun is a function that will be called upon each import.
-%%%             ImportFun must have an arity of 2: Taking an arbitrary `state`
-%%%             term, and a map containing the `port`, `module`, `func`, `args`,
-%%%             `signature`, and the `options` map of the import.
+%%%             ImportFun must have an arity of 2: Taking an arbitrary `state'
+%%%             term, and a map containing the `port', `module', `func', `args',
+%%%             `signature', and the `options' map of the import.
 %%%             It must return a tuple of the form {ok, Response, NewState}.
 %%%     serialize(Port) -> {ok, Mem}
 %%%         Where:
@@ -44,7 +44,7 @@
 %%%         Where:
 %%%             Port is the port to the LID.
 %%%             Mem is a binary output of a previous `serialize/1' call.
-%%% '''
+%%% </pre>
 %%% 
 %%% BEAMR was designed for use in the HyperBEAM project, but is suitable for
 %%% deployment in other Erlang applications that need to run WASM modules. PRs
@@ -55,7 +55,7 @@
 %%% Utility API:
 -export([serialize/1, deserialize/2, stub/3]).
 
--include("src/include/hb.hrl").
+-include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 %% @doc Load the driver for the WASM executor.
@@ -176,9 +176,9 @@ call(WASM, FuncRef, Args, ImportFun, StateMsg, Opts)
     end.
 
 %% @doc Stub import function for the WASM executor.
-stub(Msg1, _Msg2, _Opts) ->
+stub(Base, _Req, _Opts) ->
     ?event(stub_stdlib_called),
-    {ok, [0], Msg1}.
+    {ok, [0], Base}.
 
 %% @doc Synchonously monitor the WASM executor for a call result and any
 %% imports that need to be handled.
@@ -190,7 +190,7 @@ monitor_call(WASM, ImportFun, StateMsg, Opts) ->
         {import, Module, Func, Args, Signature} ->
             ?event({import_called, Module, Func, Args, Signature}),
             try
-                {ok, Res, StateMsg2} =
+                {ok, Res, StateReq} =
                     ImportFun(StateMsg,
                         #{
                             instance => WASM,
@@ -203,7 +203,7 @@ monitor_call(WASM, ImportFun, StateMsg, Opts) ->
                     ),
                 ?event({import_ret, Module, Func, {args, Args}, {res, Res}}),
                 dispatch_response(WASM, Res),
-                monitor_call(WASM, ImportFun, StateMsg2, Opts)
+                monitor_call(WASM, ImportFun, StateReq, Opts)
             catch
                 Err:Reason:Stack ->
                     % Signal the WASM executor to stop.
@@ -275,8 +275,8 @@ imported_function_test() ->
     {ok, WASM, _Imports, _Exports} = start(File),
     {ok, [Result], _} =
         call(WASM, <<"pow">>, [2, 5],
-            fun(Msg1, #{ args := [Arg1, Arg2] }, _Opts) ->
-                {ok, [Arg1 * Arg2], Msg1}
+            fun(Base, #{ args := [Arg1, Arg2] }, _Opts) ->
+                {ok, [Arg1 * Arg2], Base}
             end),
     ?assertEqual(32, Result).
 
@@ -311,7 +311,7 @@ benchmark_test() ->
     BenchTime = 1,
     {ok, File} = file:read_file("test/test-64.wasm"),
     {ok, WASM, _ImportMap, _Exports} = start(File),
-    Iterations = hb:benchmark(
+    Iterations = hb_test_utils:benchmark(
         fun() ->
             {ok, [Result]} = call(WASM, "fac", [5.0]),
             ?assertEqual(120.0, Result)
@@ -320,8 +320,10 @@ benchmark_test() ->
     ),
     ?event(benchmark, {scheduled, Iterations}),
     ?assert(Iterations > 1000),
-    hb_util:eunit_print(
-        "Executed ~s calls through Beamr in ~p seconds (~.2f call/s)",
-        [hb_util:human_int(Iterations), BenchTime, Iterations / BenchTime]
+    hb_test_utils:benchmark_print(
+        <<"Direct beamr: Executed">>,
+        <<"calls">>,
+        Iterations,
+        BenchTime
     ),
     ok.

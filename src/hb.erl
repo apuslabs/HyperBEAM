@@ -1,4 +1,4 @@
-%%% @doc Hyperbeam is a decentralized node implementing the Converge Protocol
+%%% @doc Hyperbeam is a decentralized node implementing the AO-Core protocol
 %%% on top of Arweave.
 %%% 
 %%% This protocol offers a computation layer for executing arbitrary logic on 
@@ -14,10 +14,10 @@
 %%% Allowing users to store and retrieve not only arbitrary bytes, but also to
 %%% perform execution of computation upon that data:
 %%% 
-%%% 	`Hyperbeam(Message1, Message2) => Message3'
+%%% 	`Hyperbeam(Base, Request) => Result'
 %%% 
 %%% When Hyperbeam executes a message, it will return a new message containing
-%%% the result of that execution, as well as signed attestations of its
+%%% the result of that execution, as well as signed commitments of its
 %%% correctness. If the computation that is executed is deterministic, recipients
 %%% of the new message are able to verify that the computation was performed
 %%% correctly. The new message may be stored back to Arweave if desired,
@@ -47,9 +47,9 @@
 %%%    `hb_http' handles making requests and responding with messages. `cowboy'
 %%%    is used to implement the underlying HTTP server.
 %%% 
-%%% 3. `hb_converge' implements the computation logic of the node: A mechanism
+%%% 3. `hb_ao' implements the computation logic of the node: A mechanism
 %%%    for resolving messages to other messages, via the application of logic
-%%%    implemented in `devices'. `hb_converge' also manages the loading of Erlang
+%%%    implemented in `devices'. `hb_ao' also manages the loading of Erlang
 %%%    modules for each device into the node's environment. There are many
 %%%    different default devices implemented in the hyperbeam node, using the
 %%%    namespace `dev_*'. Some of the critical components are:
@@ -82,14 +82,14 @@
 %%% modules of the hyperbeam node.
 -module(hb).
 %%% Configuration and environment:
--export([init/0, now/0, build/0]).
+-export([init/0, now/0, build/0, deploy_scripts/0]).
 %%% Base start configurations:
 -export([start_simple_pay/0, start_simple_pay/1, start_simple_pay/2]).
 -export([topup/3, topup/4]).
 -export([start_mainnet/0, start_mainnet/1]).
 %%% Debugging tools:
--export([event/1, event/2, event/3, event/4, event/5, event/6, no_prod/3]).
--export([read/1, read/2, debug_wait/4, profile/1, benchmark/2, benchmark/3]).
+-export([no_prod/3]).
+-export([read/1, read/2, debug_wait/4]).
 %%% Node wallet and address management:
 -export([address/0, wallet/0, wallet/1]).
 -include("include/hb.hrl").
@@ -105,7 +105,7 @@ init() ->
 %% @doc Start a mainnet server without payments.
 start_mainnet() ->
     start_mainnet(hb_opts:get(port)).
-start_mainnet(Port) ->
+start_mainnet(Port) when is_integer(Port) ->
     start_mainnet(#{ port => Port });
 start_mainnet(Opts) ->
     application:ensure_all_started([
@@ -116,17 +116,14 @@ start_mainnet(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
-    Wallet = hb:wallet(hb_opts:get(priv_key_location)),
+    Wallet = hb:wallet(hb_opts:get(priv_key_location, no_viable_wallet_path, Opts)),
     BaseOpts = hb_http_server:set_default_opts(Opts),
     hb_http_server:start_node(
         FinalOpts =
             BaseOpts#{
-                store => {hb_store_fs, #{ prefix => "mainnet-cache" }},
+                store => #{ <<"store-module">> => hb_store_fs, <<"name">> => <<"cache-mainnet">> },
                 priv_wallet => Wallet
             }
     ),
@@ -138,11 +135,11 @@ start_mainnet(Opts) ->
     io:format(
         "Started mainnet node at http://localhost:~p~n"
         "Operator: ~s~n",
-        [maps:get(port, Opts), Address]
+        [hb_maps:get(port, Opts, undefined, Opts), Address]
     ),
-    <<"http://localhost:", (integer_to_binary(maps:get(port, Opts)))/binary>>.
+    <<"http://localhost:", (integer_to_binary(hb_maps:get(port, Opts, undefined, Opts)))/binary>>.
 
-%%% @doc Start a server with a `simple-pay@1.0` pre-processor.
+%%% @doc Start a server with a `simple-pay@1.0' pre-processor.
 start_simple_pay() ->
     start_simple_pay(address()).
 start_simple_pay(Addr) ->
@@ -160,22 +157,21 @@ do_start_simple_pay(Opts) ->
         ranch,
         cowboy,
         gun,
-        prometheus,
-        prometheus_cowboy,
-        os_mon,
-        rocksdb
+        os_mon
     ]),
-    Port = maps:get(port, Opts),
+    Port = hb_maps:get(port, Opts, undefined, Opts),
     Processor =
         #{
             <<"device">> => <<"p4@1.0">>,
-            <<"ledger_device">> => <<"simple-pay@1.0">>,
-            <<"pricing_device">> => <<"simple-pay@1.0">>
+            <<"ledger-device">> => <<"simple-pay@1.0">>,
+            <<"pricing-device">> => <<"simple-pay@1.0">>
         },
     hb_http_server:start_node(
         Opts#{
-            preprocessor => Processor,
-            postprocessor => Processor
+            on => #{
+                <<"request">> => Processor,
+                <<"response">> => Processor
+            }
         }
     ),
     io:format(
@@ -185,11 +181,41 @@ do_start_simple_pay(Opts) ->
     ),
     <<"http://localhost:", (integer_to_binary(Port))/binary>>.
 
+%% @doc Upload all scripts from the `scripts' directory to the node to Arweave,
+%% printing their IDs.
+deploy_scripts() ->
+    deploy_scripts("scripts/").
+deploy_scripts(Dir) ->
+    Files = filelib:wildcard(Dir ++ "*.lua"),
+    lists:foreach(fun(File) ->
+        {ok, Script} = file:read_file(File),
+        Msg =
+            hb_message:commit(
+                #{
+                    <<"data-protocol">> => <<"ao">>,
+                    <<"variant">> => <<"ao.N.1">>,
+                    <<"type">> => <<"module">>,
+                    <<"content-type">> => <<"application/lua">>,
+                    <<"name">> => hb_util:bin(File),
+                    <<"body">> => Script
+                },
+                wallet(),
+                <<"ans104@1.0">>
+            ),
+        {Status, _} = hb_client:upload(Msg, #{}, <<"ans104@1.0">>),
+        io:format(
+            "~s: ~s (upload status: ~p)~n",
+            [File, hb_util:id(Msg), Status]
+        )
+    end, Files),
+    ok.
+
+
 %% @doc Helper for topping up a user's balance on a simple-pay node.
 topup(Node, Amount, Recipient) ->
     topup(Node, Amount, Recipient, wallet()).
 topup(Node, Amount, Recipient, Wallet) ->
-    Message = hb_message:attest(
+    Message = hb_message:commit(
         #{
             <<"path">> => <<"/~simple-pay@1.0/topup">>,
             <<"amount">> => Amount,
@@ -202,9 +228,11 @@ topup(Node, Amount, Recipient, Wallet) ->
 wallet() ->
     wallet(hb_opts:get(priv_key_location)).
 wallet(Location) ->
+    wallet(Location, #{}).
+wallet(Location, Opts) ->
     case file:read_file_info(Location) of
         {ok, _} ->
-            ar_wallet:load_keyfile(Location);
+            ar_wallet:load_keyfile(Location, Opts);
         {error, _} -> 
             Res = ar_wallet:new_keyfile(?DEFAULT_KEY_TYPE, Location),
             ?event({created_new_keyfile, Location, address(Res)}),
@@ -218,40 +246,6 @@ address() -> address(wallet()).
 address(Wallet) when is_tuple(Wallet) ->
     hb_util:encode(ar_wallet:to_address(Wallet));
 address(Location) -> address(wallet(Location)).
-
-%% @doc Debugging event logging function. For now, it just prints to standard
-%% error.
-event(X) -> event(global, X).
-event(Topic, X) -> event(Topic, X, "").
-event(Topic, X, Mod) -> event(Topic, X, Mod, undefined).
-event(Topic, X, Mod, Func) -> event(Topic, X, Mod, Func, undefined).
-event(Topic, X, Mod, Func, Line) -> event(Topic, X, Mod, Func, Line, #{}).
-event(Topic, X, Mod, undefined, Line, Opts) -> event(Topic, X, Mod, "", Line, Opts);
-event(Topic, X, Mod, Func, undefined, Opts) -> event(Topic, X, Mod, Func, "", Opts);
-event(Topic, X, ModAtom, Func, Line, Opts) when is_atom(ModAtom) ->
-    % Check if the module has the `hb_debug' attribute set to `print'.
-    case lists:member({hb_debug, [print]}, ModAtom:module_info(attributes)) of
-        true -> hb_util:debug_print(X, atom_to_list(ModAtom), Func, Line);
-        false -> 
-            % Check if the module has the `hb_debug' attribute set to `no_print'.
-            case lists:keyfind(hb_debug, 1, ModAtom:module_info(attributes)) of
-                {hb_debug, [no_print]} -> X;
-                _ -> event(Topic, X, atom_to_list(ModAtom), Func, Line, Opts)
-            end
-    end;
-event(Topic, X, ModStr, Func, Line, Opts) ->
-    % Check if the debug_print option has the topic in it if set.
-    case hb_opts:get(debug_print, false, Opts) of
-        ModList when is_list(ModList) ->
-            case lists:member(ModStr, ModList)
-                orelse lists:member(atom_to_list(Topic), ModList)
-            of
-                true -> hb_util:debug_print(X, ModStr, Func, Line);
-                false -> X
-            end;
-        true -> hb_util:debug_print(X, ModStr, Func, Line);
-        false -> X
-    end.
 
 %% @doc Debugging function to read a message from the cache.
 %% Specify either a scope atom (local or remote) or a store tuple
@@ -286,65 +280,8 @@ now() ->
 build() ->
     r3:do(compile, [{dir, "src"}]).
 
-%% @doc Utility function to start a profiling session and run a function,
-%% then analyze the results. Obviously -- do not use in production.
-profile(Fun) ->
-    eprof:start_profiling([self()]),
-    try
-        Fun()
-    after
-        eprof:stop_profiling()
-    end,
-    eprof:analyze(total).
-
 %% @doc Utility function to wait for a given amount of time, printing a debug
 %% message to the console first.
 debug_wait(T, Mod, Func, Line) ->
     ?event(wait, {debug_wait, {T, Mod, Func, Line}}),
     receive after T -> ok end.
-
-%% @doc Run a function as many times as possible in a given amount of time.
-benchmark(Fun, TLen) ->
-    T0 = erlang:system_time(millisecond),
-    until(
-        fun() -> erlang:system_time(millisecond) - T0 > (TLen * 1000) end,
-        Fun,
-        0
-    ).
-
-%% @doc Run multiple instances of a function in parallel for a given amount of time.
-benchmark(Fun, TLen, Procs) ->
-    Parent = self(),
-    receive X -> ?event(benchmark, {start_benchmark_worker, X}) end,
-    StartWorker =
-        fun(_) ->
-            Ref = make_ref(),
-            ?event(benchmark, {start_benchmark_worker, Ref}),
-            spawn_link(fun() ->
-                Count = benchmark(Fun, TLen),
-                Parent ! {work_complete, Ref, Count}
-            end),
-            Ref
-        end,
-    CollectRes =
-        fun(R) ->
-            receive
-                {work_complete, R, Count} ->
-                    ?event(benchmark, {work_complete, R, Count}),
-                    Count
-            end
-        end,
-    Refs = lists:map(StartWorker, lists:seq(1, Procs)),
-    lists:sum(lists:map(CollectRes, Refs)).
-
-until(Condition, Fun, Count) ->
-    case Condition() of
-        false ->
-            case apply(Fun, hb_converge:truncate_args(Fun, [Count])) of
-                {count, AddToCount} ->
-                    until(Condition, Fun, Count + AddToCount);
-                _ ->
-                    until(Condition, Fun, Count + 1)
-            end;
-        true -> Count
-    end.

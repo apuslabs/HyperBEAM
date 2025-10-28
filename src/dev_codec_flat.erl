@@ -2,70 +2,100 @@
 %%% (potentially multi-layer) paths as their keys, and a normal TABM binary as 
 %%% their value.
 -module(dev_codec_flat).
--export([from/1, to/1, attest/3, verify/3, attested/3]).
+-export([from/3, to/3, commit/3, verify/3]).
 %%% Testing utilities
--export([serialize/1, deserialize/1]).
+-export([serialize/1, serialize/2, deserialize/1]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
 %%% Route signature functions to the `dev_codec_httpsig' module
-attest(Msg, Req, Opts) -> dev_codec_httpsig:attest(Msg, Req, Opts).
+commit(Msg, Req, Opts) -> dev_codec_httpsig:commit(Msg, Req, Opts).
 verify(Msg, Req, Opts) -> dev_codec_httpsig:verify(Msg, Req, Opts).
-attested(Msg, Req, Opts) -> dev_codec_httpsig:attested(Msg, Req, Opts).
 
 %% @doc Convert a flat map to a TABM.
-from(Bin) when is_binary(Bin) -> Bin;
-from(Map) when is_map(Map) ->
-    maps:fold(
-        fun(Path, Value, Acc) ->
-            inject_at_path(hb_path:term_to_path_parts(Path), from(Value), Acc)
-        end,
-        #{},
-        Map
-    ).
-
-%% Helper function to inject a value at a specific path in a nested map
-inject_at_path([Key], Value, Map) ->
-    maps:put(Key, Value, Map);
-inject_at_path([Key|Rest], Value, Map) ->
-    SubMap = maps:get(Key, Map, #{}),
-    maps:put(Key, inject_at_path(Rest, Value, SubMap), Map).
+from(Bin, _, _Opts) when is_binary(Bin) -> {ok, Bin};
+from(Map, Req, Opts) when is_map(Map) ->
+    {ok,
+        maps:fold(
+            fun(Path, Value, Acc) ->
+                case Value of
+                    [] ->
+                        ?event(error,
+                            {empty_list_value,
+                                {path, Path},
+                                {value, Value},
+                                {map, Map}
+                            }
+                        );
+                    _ ->
+                        ok
+                end,
+                hb_util:deep_set(
+                    hb_path:term_to_path_parts(Path, Opts),
+                    hb_util:ok(from(Value, Req, Opts)),
+                    Acc,
+                    Opts
+                )
+            end,
+            #{},
+            Map
+        )
+    }.
 
 %% @doc Convert a TABM to a flat map.
-to(Bin) when is_binary(Bin) -> Bin;
-to(Map) when is_map(Map) ->
-    maps:fold(
-        fun(Key, Value, Acc) ->
-            case to(Value) of
-                SubMap when is_map(SubMap) ->
-                    maps:fold(
-                        fun(SubKey, SubValue, InnerAcc) ->
-                            maps:put(
-                                hb_path:to_binary([Key, SubKey]),
-                                SubValue,
-                                InnerAcc
-                            )
-                        end,
-                        Acc,
-                        SubMap
-                    );
-                SimpleValue ->
-                    maps:put(hb_path:to_binary([Key]), SimpleValue, Acc)
-            end
-        end,
-        #{},
-        Map
-    ).
+to(Bin, _, _Opts) when is_binary(Bin) -> {ok, Bin};
+to(List, Req, Opts) when is_list(List) ->
+    to(
+        hb_util:list_to_numbered_message(List),
+        Req,
+        Opts
+    );
+to(Map, Req, Opts) when is_map(Map) ->
+    Res = 
+        maps:fold(
+            fun(Key, Value, Acc) ->
+                case to(Value, Req, Opts) of
+                    {ok, SubMap} when is_map(SubMap) ->
+                        maps:fold(
+                            fun(SubKey, SubValue, InnerAcc) ->
+                                maps:put(
+                                    hb_path:to_binary([Key, SubKey]),
+                                    SubValue,
+                                    InnerAcc
+                                )
+                            end,
+                            Acc,
+                            SubMap
+                        );
+                    {ok, SimpleValue} ->
+                        maps:put(hb_path:to_binary([Key]), SimpleValue, Acc)
+                end
+            end,
+            #{},
+            Map
+        ),
+    {ok, Res}.
 
 serialize(Map) when is_map(Map) ->
+    serialize(Map, #{}).
+
+serialize(Map, Opts) when is_map(Map) ->
     Flattened = hb_message:convert(Map, <<"flat@1.0">>, #{}),
-    iolist_to_binary(lists:foldl(
-        fun(Key, Acc) ->
-            [Acc, hb_path:to_binary(Key), <<": ">>, maps:get(Key, Flattened), <<"\n">>]
-        end,
-        <<>>,
-        maps:keys(Flattened)
-    )).
+    {ok,
+        iolist_to_binary(lists:foldl(
+                fun(Key, Acc) ->
+                    [
+                        Acc,
+                        hb_path:to_binary(Key),
+                        <<": ">>,
+                        hb_maps:get(Key, Flattened, Opts), <<"\n">>
+                    ]
+                end,
+                <<>>,
+                hb_util:to_sorted_keys(Flattened, Opts)
+            )
+        )
+    }.
 
 deserialize(Bin) when is_binary(Bin) ->
     Flat = lists:foldl(
@@ -80,21 +110,21 @@ deserialize(Bin) when is_binary(Bin) ->
         #{},
         binary:split(Bin, <<"\n">>, [global])
     ),
-    hb_message:convert(Flat, <<"structured@1.0">>, <<"flat@1.0">>, #{}).
+    {ok, hb_message:convert(Flat, <<"structured@1.0">>, <<"flat@1.0">>, #{})}.
 
 %%% Tests
 
 simple_conversion_test() ->
     Flat = #{[<<"a">>] => <<"value">>},
     Nested = #{<<"a">> => <<"value">>},
-    ?assert(hb_message:match(Nested, dev_codec_flat:from(Flat))),
-    ?assert(hb_message:match(Flat, dev_codec_flat:to(Nested))).
+    ?assert(hb_message:match(Nested, hb_util:ok(dev_codec_flat:from(Flat, #{}, #{})))),
+    ?assert(hb_message:match(Flat, hb_util:ok(dev_codec_flat:to(Nested, #{}, #{})))).
 
 nested_conversion_test() ->
     Flat = #{<<"a/b">> => <<"value">>},
     Nested = #{<<"a">> => #{<<"b">> => <<"value">>}},
-    Unflattened = dev_codec_flat:from(Flat),
-    Flattened = dev_codec_flat:to(Nested),
+    Unflattened = hb_util:ok(dev_codec_flat:from(Flat, #{}, #{})),
+    Flattened = hb_util:ok(dev_codec_flat:to(Nested, #{}, #{})),
     ?assert(hb_message:match(Nested, Unflattened)),
     ?assert(hb_message:match(Flat, Flattened)).
 
@@ -111,8 +141,8 @@ multiple_paths_test() ->
         },
         <<"a">> => <<"3">>
     },
-    ?assert(hb_message:match(Nested, dev_codec_flat:from(Flat))),
-    ?assert(hb_message:match(Flat, dev_codec_flat:to(Nested))).
+    ?assert(hb_message:match(Nested, hb_util:ok(dev_codec_flat:from(Flat, #{}, #{})))),
+    ?assert(hb_message:match(Flat, hb_util:ok(dev_codec_flat:to(Nested, #{}, #{})))).
 
 path_list_test() ->
     Nested = #{
@@ -123,27 +153,27 @@ path_list_test() ->
             <<"a">> => <<"2">>
         }
     },
-    Flat = dev_codec_flat:to(Nested),
+    Flat = hb_util:ok(dev_codec_flat:to(Nested, #{}, #{})),
     lists:foreach(
         fun(Key) ->
             ?assert(not lists:member($\n, binary_to_list(Key)))
         end,
-        maps:keys(Flat)
+        hb_maps:keys(Flat, #{})
     ).
 
 binary_passthrough_test() ->
     Bin = <<"raw binary">>,
-    ?assertEqual(Bin, dev_codec_flat:from(Bin)),
-    ?assertEqual(Bin, dev_codec_flat:to(Bin)).
+    ?assertEqual(Bin, hb_util:ok(dev_codec_flat:from(Bin, #{}, #{}))),
+    ?assertEqual(Bin, hb_util:ok(dev_codec_flat:to(Bin, #{}, #{}))).
 
 deep_nesting_test() ->
     Flat = #{<<"a/b/c/d">> => <<"deep">>},
     Nested = #{<<"a">> => #{<<"b">> => #{<<"c">> => #{<<"d">> => <<"deep">>}}}},
-    Unflattened = dev_codec_flat:from(Flat),
-    Flattened = dev_codec_flat:to(Nested),
+    Unflattened = hb_util:ok(dev_codec_flat:from(Flat, #{}, #{})),
+    Flattened = hb_util:ok(dev_codec_flat:to(Nested, #{}, #{})),
     ?assert(hb_message:match(Nested, Unflattened)),
     ?assert(hb_message:match(Flat, Flattened)).
 
 empty_map_test() ->
-    ?assertEqual(#{}, dev_codec_flat:from(#{})),
-    ?assertEqual(#{}, dev_codec_flat:to(#{})).
+    ?assertEqual(#{}, hb_util:ok(dev_codec_flat:from(#{}, #{}, #{}))),
+    ?assertEqual(#{}, hb_util:ok(dev_codec_flat:to(#{}, #{}, #{}))).

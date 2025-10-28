@@ -17,40 +17,30 @@
 %%% do not want to charge for requests, so we return `ok' and do not actually
 %%% debit the user's account. Similarly, we are not interested in taking payments
 %%% from users, so we do not implement `credit/3'.
--export([debit/3]).
+-export([charge/3]).
 -include("include/hb.hrl").
 
 %% @doc Decide whether or not to service a request from a given address.
 estimate(_, Msg, NodeMsg) ->
     ?event(payment, {estimate, {msg, Msg}}),
     % Check if the address is in the allow-list.
-    case hb_converge:get(<<"type">>, Msg, <<"pre">>, NodeMsg) of
-        <<"pre">> ->
-            case is_admissible(Msg, NodeMsg) of
-                true -> {ok, 0};
-                false -> {ok, <<"infinity">>}
-            end;
-        <<"post">> -> {ok, 0}
+    case is_admissible(Msg, NodeMsg) of
+        true -> {ok, 0};
+        false -> {ok, <<"infinity">>}
     end.
 
 %% @doc Check whether all of the signers of the request are in the allow-list.
 is_admissible(Msg, NodeMsg) ->
     AllowList = hb_opts:get(faff_allow_list, [], NodeMsg),
-    Req = hb_converge:get(<<"request">>, Msg, NodeMsg),
-    Signers =
-        lists:filtermap(
-            fun(Signer) when not ?IS_ID(Signer) -> false;
-               (Signer) -> {true, hb_util:human_id(Signer)}
-            end,
-            hb_converge:get(<<"attestors">>, Req, undefined, NodeMsg)
-        ),
+    Req = hb_ao:get(<<"request">>, Msg, NodeMsg),
+    Signers = hb_message:signers(Req, NodeMsg),
     ?event(payment, {is_admissible, {signers, Signers}, {allow_list, AllowList}}),
     lists:all(
         fun(Signer) -> lists:member(Signer, AllowList) end,
         Signers
     ).
 
-%% @doc Debit the user's account if the request is allowed.
-debit(_, Req, _NodeMsg) ->
-    ?event(payment, {debit, Req}),
+%% @doc Charge the user's account if the request is allowed.
+charge(_, Req, _NodeMsg) ->
+    ?event(payment, {charge, Req}),
     {ok, true}.

@@ -5,22 +5,26 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+%%% @doc Fetch a resource from the cache using "target" ID extracted from the message
 read(_M1, M2, Opts) ->
-    ID = hb_converge:get(<<"target">>, M2, Opts),
+    ID = hb_ao:get(<<"target">>, M2, Opts),
     ?event({lookup, {id, ID}, {opts, Opts}}),
     case hb_cache:read(ID, Opts) of
-        {ok, Res} ->
-            ?event({lookup_result, Res}),
-            case hb_converge:get(<<"accept">>, M2, Opts) of
+        {ok, RawRes} ->
+            % We are sending the result over the wire, so make sure it is
+            % fully loaded, to save the recipient latency.
+            ?event({lookup_result, RawRes}),
+            case hb_ao:get(<<"accept">>, M2, Opts) of
                 <<"application/aos-2">> ->
-                    Struct = dev_json_iface:message_to_json_struct(Res),
+                    Res = hb_cache:ensure_all_loaded(RawRes),
+                    Struct = dev_json_iface:message_to_json_struct(Res, Opts),
                     {ok,
                         #{
-                            <<"body">> => jiffy:encode(Struct),
+                            <<"body">> => hb_json:encode(Struct),
                             <<"content-type">> => <<"application/aos-2">>
                         }};
                 _ ->
-                    {ok, Res}
+                    {ok, RawRes}
             end;
         not_found ->
             ?event({lookup_not_found, ID}),
@@ -39,7 +43,7 @@ message_lookup_test() ->
     Msg = #{ <<"test-key">> => <<"test-value">>, <<"data">> => <<"test-data">> },
     {ok, ID} = hb_cache:write(Msg, #{}),
     {ok, RetrievedMsg} = read(#{}, #{ <<"target">> => ID }, #{}),
-    ?assertEqual(Msg, RetrievedMsg).
+    ?assert(hb_message:match(Msg, RetrievedMsg)).
 
 aos2_message_lookup_test() ->
     Msg = #{ <<"test-key">> => <<"test-value">>, <<"data">> => <<"test-data">> },
@@ -50,24 +54,25 @@ aos2_message_lookup_test() ->
             #{ <<"target">> => ID, <<"accept">> => <<"application/aos-2">> },
             #{}
         ),
-    Decoded = jiffy:decode(hb_converge:get(<<"body">>, RetrievedMsg, #{}), [return_maps]),
-    ?assertEqual(<<"test-data">>, hb_converge:get(<<"data">>, Decoded, #{})).
+    
+    {ok, Decoded} = dev_json_iface:json_to_message(hb_ao:get(<<"body">>, RetrievedMsg, #{}), #{}),
+    ?assertEqual(<<"test-data">>, hb_ao:get(<<"data">>, Decoded, #{})).
 
 http_lookup_test() ->
-    Store = {
-        hb_store_fs,
-        #{ prefix => "mainnet-cache" }
+    Store = #{
+        <<"store-module">> => hb_store_fs,
+        <<"name">> => <<"cache-mainnet">>
     },
-    Opts = #{ store => Store },
+    Opts = #{ store => [Store] },
     Msg = #{ <<"test-key">> => <<"test-value">>, <<"data">> => <<"test-data">> },
     {ok, ID} = hb_cache:write(Msg, Opts),
     Node = hb_http_server:start_node(Opts),
     Wallet = hb:wallet(),
-    Req = hb_message:attest(#{
+    Req = hb_message:commit(#{
         <<"path">> => <<"/~lookup@1.0/read?target=", ID/binary>>,
         <<"device">> => <<"lookup@1.0">>,
         <<"accept">> => <<"application/aos-2">>
     }, Wallet),
     {ok, Res} = hb_http:post(Node, Req, Opts),
-    Decoded = jiffy:decode(hb_converge:get(<<"body">>, Res, Opts), [return_maps]),
-    ?assertEqual(<<"test-data">>, hb_converge:get(<<"data">>, Decoded, Opts)).
+    {ok, Decoded} = dev_json_iface:json_to_message(hb_ao:get(<<"body">>, Res, Opts), Opts),
+    ?assertEqual(<<"test-data">>, hb_ao:get(<<"Data">>, Decoded, Opts)).
