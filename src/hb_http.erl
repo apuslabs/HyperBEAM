@@ -507,10 +507,76 @@ reply(InitReq, TABMReq, RawStatus, RawMessage, Opts) ->
                     )
                 }
             },
-            {body_size, byte_size(EncodedBody)}
         }
     ),
-    {ok, PostStreamReq, no_state}.
+    case maps:get(<<"stream_generator">>, KeyNormMessage, undefined) of
+        StreamFun when is_function(StreamFun, 1) ->
+            {ok, Req, _Message} = reply_handle_cookies(InitReq, KeyNormMessage, Opts),
+            Headers = #{
+                <<"content-type">> => <<"text/event-stream">>,
+                <<"cache-control">> => <<"no-cache">>,
+                <<"connection">> => <<"keep-alive">>
+            },
+            ReqHdr = cowboy_req:header(<<"access-control-request-headers">>, Req, <<"">>),
+            HeadersWithCors = add_cors_headers(Headers, ReqHdr, Opts),
+            EncodedHeaders = hb_private:reset(HeadersWithCors),
+            ReqBeforeStream = Req#{ resp_headers => EncodedHeaders },
+            PostStreamReq = cowboy_req:stream_reply(Status, #{}, ReqBeforeStream),
+            Sender = fun(Data) ->
+                cowboy_req:stream_body(Data, nofin, PostStreamReq)
+            end,
+            try
+                StreamFun(Sender)
+            catch
+                E:R:S ->
+                    ?event(http_error, {stream_error, E, R, S})
+            end,
+            cowboy_req:stream_body(<<>>, fin, PostStreamReq),
+            {ok, PostStreamReq, no_state};
+        _ ->
+            {ok, Req, Message} = reply_handle_cookies(InitReq, KeyNormMessage, Opts),
+            {ok, HeadersBeforeCors, EncodedBody} =
+                encode_reply(
+                    Status,
+                    TABMReq,
+                    Message,
+                    Opts
+                ),
+            % Get the CORS request headers from the message, if they exist.
+            ReqHdr = cowboy_req:header(<<"access-control-request-headers">>, Req, <<"">>),
+            HeadersWithCors = add_cors_headers(HeadersBeforeCors, ReqHdr, Opts),
+            EncodedHeaders = hb_private:reset(HeadersWithCors),
+            ?event(http,
+                {http_replying,
+                    {status, {explicit, Status}},
+                    {path, hb_maps:get(<<"path">>, Req, undefined_path, Opts)},
+                    {raw_message, RawMessage},
+                    {enc_headers, {explicit, EncodedHeaders}},
+                    {enc_body, EncodedBody}
+                }
+            ),
+            ReqBeforeStream = Req#{ resp_headers => EncodedHeaders },
+            PostStreamReq = cowboy_req:stream_reply(Status, #{}, ReqBeforeStream),
+            cowboy_req:stream_body(EncodedBody, nofin, PostStreamReq),
+            EndTime = os:system_time(millisecond),
+            ?event(http, {reply_headers, {explicit, PostStreamReq}}),
+            ?event(http_short,
+                {sent,
+                    {status, Status},
+                    {duration, EndTime - hb_maps:get(start_time, Req, undefined, Opts)},
+                    {method, cowboy_req:method(Req)},
+                    {path,
+                        {string,
+                            uri_string:percent_decode(
+                                hb_maps:get(<<"path">>, TABMReq, <<"[NO PATH]">>, Opts)
+                            )
+                        }
+                    },
+                    {body_size, byte_size(EncodedBody)}
+                }
+            ),
+            {ok, PostStreamReq, no_state}
+    end.
 
 %% @doc Handle replying with cookies if the message contains them. Returns the
 %% new Cowboy `Req` object, and the message with the cookies removed. Both
