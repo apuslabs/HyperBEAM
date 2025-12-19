@@ -1,7 +1,7 @@
 %%% @doc Inference device with OpenAI-compatible API.
 %%% This module provides an interface to a local Python-based inference server.
 -module(dev_inference).
--export([info/1, completions/3, chat/3, health/3, v1/3, stop/0]).
+-export([info/1, completions/3, chat/3, models/3, health/3, v1/3, stop/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
@@ -12,7 +12,7 @@
 %% @doc Return information about the device.
 info(_Opts) ->
     #{
-        exports => [<<"completions">>, <<"chat">>, <<"health">>, <<"v1">>],
+        exports => [<<"completions">>, <<"chat">>, <<"models">>, <<"health">>, <<"v1">>],
         description => <<"Inference device with OpenAI-compatible API">>,
         version => <<"1.0">>
     }.
@@ -45,6 +45,15 @@ chat(Base, Req, Opts) ->
         }, 
         Opts
     )}.
+
+%% @doc Handle models request.
+models(_Base, _Req, _Opts) ->
+    Body = <<"{\"object\":\"list\",\"data\":[{\"id\":\"google/gemma-3-27b-it\",\"object\":\"model\",\"created\":1766123915,\"owned_by\":\"sglang\",\"root\":\"google/gemma-3-27b-it\",\"max_model_len\":16384}]}">>,
+    {ok, #{
+        <<"status">> => 200,
+        <<"content-type">> => <<"application/json">>,
+        <<"body">> => Body
+    }}.
 
 %% @doc Handle v1 API requests.
 v1(Base, Req, Opts) ->
