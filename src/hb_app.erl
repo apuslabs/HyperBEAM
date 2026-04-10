@@ -19,4 +19,5 @@ start(_StartType, _StartArgs) ->
     {ok, _} = hb_http_server:start().
 
 stop(_State) ->
+    catch dev_inference:stop(),
     ok.
